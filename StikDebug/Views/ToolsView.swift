@@ -26,7 +26,7 @@ struct ToolsView: View {
                     }
                 }
             }
-            .navigationTitle("Tools")
+            .navigationTitle(String(format: "Tools".localized))
         }
     }
 }

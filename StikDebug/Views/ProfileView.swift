@@ -140,7 +140,7 @@ struct ProfileView: View {
                     Section {
                         HStack {
                             Spacer()
-                            ProgressView("Loading...")
+                            ProgressView(String(format: "Loading...".localized))
                             Spacer()
                         }
                     }
@@ -158,7 +158,7 @@ struct ProfileView: View {
                             if let match = entry.bestMatchingProfile {
                                 HStack {
                                     Image(systemName: "clock")
-                                    Text("Expires: \(match.profile.formattedDate)")
+                                    Text(String(format: "Expires: %@".localized, match.profile.formattedDate))
                                 }
                                 .foregroundStyle(match.profile.dateColor)
                                 .font(.subheadline)
@@ -203,7 +203,7 @@ struct ProfileView: View {
                                         else { expandedApps.insert(entry.id) }
                                     }
                                 } label: {
-                                    Label(showMore ? "Hide older profiles" : "Show \(extraProfiles.count) older profiles",
+                                    Label(showMore ? String(format: "Hide older profiles".localized) : String(format: "Show %d older profiles".localized, extraProfiles.count),
                                           systemImage: showMore ? "chevron.up" : "chevron.down")
                                         .font(.caption)
                                         .foregroundStyle(.blue)
@@ -238,13 +238,13 @@ struct ProfileView: View {
                     Button {
                         isImporterPresented = true
                     } label: {
-                        Label("Add", systemImage: "plus")
+                        Label(String(format: "Add".localized), systemImage: "plus")
                     }
                     
                     Button {
                         Task { await loadData(force: true) }
                     } label: {
-                        Label("Reload", systemImage: "arrow.clockwise")
+                        Label(String(format: "Reload".localized), systemImage: "arrow.clockwise")
                     }
                     
                 }
@@ -282,7 +282,7 @@ struct ProfileView: View {
             }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("Remove profile for \(removeTargetName) (UUID: \(removeTargetUUID))?\nApps associated with this profile may become unavailable.")
+            Text(String(format: "Remove profile for %@ (UUID: %@)?\nApps associated with this profile may become unavailable.".localized, removeTargetName, removeTargetUUID))
         }
     }
     

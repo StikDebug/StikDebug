@@ -40,7 +40,7 @@ struct NewsView: View {
                     Button {
                         Task { await loadNews() }
                     } label: {
-                        Label("Refresh", systemImage: "arrow.clockwise")
+                        Label(String(format: "Refresh".localized), systemImage: "arrow.clockwise")
                     }
                     .disabled(isLoading)
                 }
@@ -67,7 +67,7 @@ struct NewsView: View {
             .frame(maxWidth: .infinity, minHeight: 220)
         } else if let errorMessage {
             ContentUnavailableView {
-                Label("Could Not Load News", systemImage: "exclamationmark.triangle")
+                Label(String(format: "Could Not Load News".localized), systemImage: "exclamationmark.triangle")
             } description: {
                 Text(errorMessage)
             } actions: {
@@ -77,7 +77,7 @@ struct NewsView: View {
             }
             .frame(minHeight: 280)
         } else {
-            ContentUnavailableView("No News", systemImage: "newspaper")
+            ContentUnavailableView(String(format: "No News".localized), systemImage: "newspaper")
                 .frame(minHeight: 280)
         }
     }
@@ -271,7 +271,7 @@ private struct NewsCard: View {
 
             if let url = item.url {
                 Link(destination: url) {
-                    Label("Read More", systemImage: "arrow.up.right")
+                    Label(String(format: "Read More".localized), systemImage: "arrow.up.right")
                         .font(.callout.weight(.semibold))
                 }
                 .buttonStyle(.bordered)

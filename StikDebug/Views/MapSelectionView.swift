@@ -819,18 +819,18 @@ struct LocationSimulationView: View {
 
     private var routeStatusText: String {
         if isLoadingRoute {
-            return "Calculating route…"
+            return "Calculating route…".localized
         }
         if isPrefetchingRouteSpeeds {
-            return "Prefetching road speeds…"
+            return "Prefetching road speeds…".localized
         }
         if routePlan != nil {
-            return "Route ready."
+            return "Route ready.".localized
         }
         if routeStartSelection != nil || routeEndSelection != nil {
-            return "Pick both route endpoints to build the drive."
+            return "Pick both route endpoints to build the drive.".localized
         }
-        return "Plan a route from the toolbar."
+        return "Plan a route from the toolbar.".localized
     }
 
     private var routeAttributionLink: some View {
@@ -933,7 +933,7 @@ struct LocationSimulationView: View {
 
                 VStack(spacing: 12) {
                     if isImportingCoordinates {
-                        ProgressView("Importing coordinates…")
+                        ProgressView(String(format: "Importing coordinates…".localized))
                             .font(.footnote)
                     }
 
@@ -970,7 +970,7 @@ struct LocationSimulationView: View {
                     Image(systemName: "square.and.arrow.down")
                 }
                 .disabled(isBusy || isRouteRunning || isImportingCoordinates)
-                .accessibilityLabel("Import Coordinates")
+                .accessibilityLabel(String(format: "Import Coordinates".localized))
             }
             ToolbarItem(placement: .topBarTrailing) {
                 TextField("Search location...", text: $searchText)
@@ -1289,9 +1289,9 @@ struct LocationSimulationView: View {
     private func simulate() {
         guard pairingExists, let coord = coordinate, !isBusy else { return }
         runLocationCommand(
-            errorTitle: "Simulation Failed",
+            errorTitle: String(format: "Simulation Failed".localized),
             errorMessage: { code in
-                "Could not simulate location (error \(code)). Make sure the device is connected and the DDI is mounted."
+                String(format: "Could not simulate location (error %d). Make sure the device is connected and the DDI is mounted.".localized, code)
             },
             operation: { locationUpdateCode(for: coord) }
         ) {
@@ -1312,9 +1312,9 @@ struct LocationSimulationView: View {
         stopResendLoop()
         cancelRoutePlayback(resetMarker: false)
         runLocationCommand(
-            errorTitle: "Route Simulation Failed",
+            errorTitle: String(format: "Route Simulation Failed".localized),
             errorMessage: { code in
-                "Could not start route simulation (error \(code)). Make sure the device is connected and the DDI is mounted."
+                String(format: "Could not start route simulation (error %d). Make sure the device is connected and the DDI is mounted.".localized, code)
             },
             operation: { locationUpdateCode(for: firstCoordinate) }
         ) {
@@ -1622,7 +1622,7 @@ private struct RouteSearchSheet: View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 16) {
                 routeField(
-                    title: "Start",
+                    title: String(format: "Start".localized),
                     icon: "circle.fill",
                     tint: .green,
                     text: $startQuery,
@@ -1631,7 +1631,7 @@ private struct RouteSearchSheet: View {
                 )
 
                 routeField(
-                    title: "End",
+                    title: String(format: "End".localized),
                     icon: "flag.checkered.circle.fill",
                     tint: .red,
                     text: $endQuery,
@@ -1646,7 +1646,7 @@ private struct RouteSearchSheet: View {
                 }
 
                 if isResolvingSelection {
-                    ProgressView("Resolving location…")
+                    ProgressView(String(format: "Resolving location…".localized))
                         .font(.footnote)
                 } else if !activeResults.isEmpty {
                     ScrollView {

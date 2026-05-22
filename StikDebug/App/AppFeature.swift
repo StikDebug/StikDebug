@@ -24,57 +24,57 @@ enum AppFeature: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .home:
-            return "Apps"
+            return String(format: "Apps".localized)
         case .scripts:
-            return "Scripts"
+            return String(format: "Scripts".localized)
         case .tools:
-            return "Tools"
+            return String(format: "Tools".localized)
         case .news:
-            return "News"
+            return String(format: "News".localized)
         case .console:
-            return "Console"
+            return String(format: "Console".localized)
         case .deviceInfo:
-            return "Device Info"
+            return String(format: "Device Info".localized)
         case .profiles:
-            return "App Expiry"
+            return String(format: "App Expiry".localized)
         case .processes:
-            return "Processes"
+            return String(format: "Processes".localized)
         case .location:
-            return "Location"
+            return String(format: "Location".localized)
         case .settings:
-            return "Settings"
+            return String(format: "Settings".localized)
         }
     }
 
     var detail: String {
         switch self {
         case .home:
-            return "Manage installed apps"
+            return String(format: "Manage installed apps".localized)
         case .scripts:
-            return "Manage and run JS scripts"
+            return String(format: "Manage and run JS scripts".localized)
         case .tools:
-            return "Access additional tools"
+            return String(format: "Access additional tools".localized)
         case .news:
-            return "Latest StikDebug updates"
+            return String(format: "Latest StikDebug updates".localized)
         case .console:
-            return "Live device logs"
+            return String(format: "Live device logs".localized)
         case .deviceInfo:
-            return "View detailed device metadata"
+            return String(format: "View detailed device metadata".localized)
         case .profiles:
-            return "Check app expiration dates"
+            return String(format: "Check app expiration dates".localized)
         case .processes:
-            return "Inspect running apps"
+            return String(format: "Inspect running apps".localized)
         case .location:
-            return "Simulate GPS location"
+            return String(format: "Simulate GPS location".localized)
         case .settings:
-            return "Configure StikDebug"
+            return String(format: "Configure StikDebug".localized)
         }
     }
 
     var toolTitle: String {
         switch self {
         case .location:
-            return "Location Simulation"
+            return String(format: "Location Simulation".localized)
         default:
             return title
         }

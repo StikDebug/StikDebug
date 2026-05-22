@@ -164,7 +164,7 @@ struct DeviceInfoView: View {
             List {
                 if !isPaired {
                     Section {
-                        Label("No pairing file detected", systemImage: "exclamationmark.triangle.fill")
+                        Label(String(format: "No pairing file detected".localized), systemImage: "exclamationmark.triangle.fill")
                             .foregroundStyle(.orange)
                         Text("Import your device's pairing file to get started.")
                             .font(.footnote)
@@ -186,10 +186,10 @@ struct DeviceInfoView: View {
                             .padding(.vertical, 2)
                             .contextMenu {
                                 Button { copyToPasteboard(entry.value) } label: {
-                                    Label("Copy Value", systemImage: "doc.on.doc")
+                                    Label(String(format: "Copy Value".localized), systemImage: "doc.on.doc")
                                 }
                                 Button { copyToPasteboard("\(entry.key): \(entry.value)") } label: {
-                                    Label("Copy Key & Value", systemImage: "doc.on.clipboard")
+                                    Label(String(format: "Copy Key & Value".localized), systemImage: "doc.on.clipboard")
                                 }
                             }
                         }
@@ -210,7 +210,7 @@ struct DeviceInfoView: View {
             .overlay {
                 if mgr.busy {
                     Color.black.opacity(0.35).ignoresSafeArea()
-                    ProgressView("Fetching device info…")
+                    ProgressView(String(format: "Fetching device info…".localized))
                         .padding(16)
                         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
@@ -236,7 +236,7 @@ struct DeviceInfoView: View {
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
                     if isPaired {
                         Button { mgr.initAndLoad() } label: {
-                            Label("Reload", systemImage: "arrow.clockwise")
+                            Label(String(format: "Reload".localized), systemImage: "arrow.clockwise")
                         }
 
                         Button {
@@ -247,19 +247,19 @@ struct DeviceInfoView: View {
                                 fail("Export Failed", error.localizedDescription)
                             }
                         } label: {
-                            Label("Export", systemImage: "square.and.arrow.up")
+                            Label(String(format: "Export".localized), systemImage: "square.and.arrow.up")
                         }
                         .disabled(mgr.entries.isEmpty)
 
                         Menu {
                             Button { copyAllText() } label: {
-                                Label("Copy All (Text)", systemImage: "doc.on.doc")
+                                Label(String(format: "Copy All (Text)".localized), systemImage: "doc.on.doc")
                             }
                             Button { copyAllCSV() } label: {
-                                Label("Copy All (CSV)", systemImage: "tablecells")
+                                Label(String(format: "Copy All (CSV)".localized), systemImage: "tablecells")
                             }
                             Button { shareAll() } label: {
-                                Label("Share…", systemImage: "square.and.arrow.up.on.square")
+                                Label(String(format: "Share…".localized), systemImage: "square.and.arrow.up.on.square")
                             }
                         } label: {
                             Image(systemName: "ellipsis.circle")
@@ -270,7 +270,7 @@ struct DeviceInfoView: View {
                 ToolbarItem(placement: .navigationBarLeading) {
                     if !isPaired {
                         Button { importer = true } label: {
-                            Label("Import Pairing File", systemImage: "doc.badge.plus")
+                            Label(String(format: "Import Pairing File".localized), systemImage: "doc.badge.plus")
                         }
                     }
                 }

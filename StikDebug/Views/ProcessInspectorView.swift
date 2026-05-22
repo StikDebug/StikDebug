@@ -122,11 +122,11 @@ enum ProcessControlAction: String {
     var buttonLabel: String {
         switch self {
         case .resume:
-            return "Resume"
+            return "Resume".localized
         case .pause:
-            return "Pause"
+            return "Pause".localized
         case .kill:
-            return "Kill"
+            return "Kill".localized
         }
     }
 
@@ -155,66 +155,66 @@ enum ProcessControlAction: String {
     var progressTitle: String {
         switch self {
         case .resume:
-            return "Resuming Process"
+            return "Resuming Process".localized
         case .pause:
-            return "Pausing Process"
+            return "Pausing Process".localized
         case .kill:
-            return "Terminating Process"
+            return "Terminating Process".localized
         }
     }
 
     var timeoutTitle: String {
         switch self {
         case .resume:
-            return "Resume Timed Out"
+            return "Resume Timed Out".localized
         case .pause:
-            return "Pause Timed Out"
+            return "Pause Timed Out".localized
         case .kill:
-            return "Kill Timed Out"
+            return "Kill Timed Out".localized
         }
     }
 
     var failureTitle: String {
         switch self {
         case .resume:
-            return "Resume Failed"
+            return "Resume Failed".localized
         case .pause:
-            return "Pause Failed"
+            return "Pause Failed".localized
         case .kill:
-            return "Kill Failed"
+            return "Kill Failed".localized
         }
     }
 
     var successTitle: String {
         switch self {
         case .resume:
-            return "Process Resumed"
+            return "Process Resumed".localized
         case .pause:
-            return "Process Paused"
+            return "Process Paused".localized
         case .kill:
-            return "Process Terminated"
+            return "Process Terminated".localized
         }
     }
 
     func successMessage(for pid: Int) -> String {
         switch self {
         case .resume:
-            return "Sent SIGCONT (19) to PID \(pid)."
+            return String(format: "Sent SIGCONT (19) to PID %@.".localized, pid)
         case .pause:
-            return "Sent SIGSTOP (17) to PID \(pid)."
+            return String(format: "Sent SIGSTOP (17) to PID %@.".localized, pid)
         case .kill:
-            return "PID \(pid) was terminated."
+            return String(format: "PID %@ was terminated.".localized, pid)
         }
     }
 
     func timeoutMessage(for pid: Int) -> String {
         switch self {
         case .resume:
-            return "Could not confirm resume for PID \(pid). Try again."
+            return String(format: "Could not confirm resume for PID %@. Try again.".localized, pid)
         case .pause:
-            return "Could not confirm pause for PID \(pid). Try again."
+            return String(format: "Could not confirm pause for PID %@. Try again.".localized, pid)
         case .kill:
-            return "Could not confirm termination for PID \(pid). Try again."
+            return String(format: "Could not confirm termination for PID %@. Try again.".localized, pid)
         }
     }
 }
@@ -284,7 +284,7 @@ private struct ProcessRow: View {
                             onKillTap(process)
                         } label: {
                             if isConfirming {
-                                Label("Confirm", systemImage: "checkmark.circle.fill")
+                                Label(String(format: "Confirm".localized), systemImage: "checkmark.circle.fill")
                                     .labelStyle(.iconOnly)
                                     .font(.title3)
                             } else {

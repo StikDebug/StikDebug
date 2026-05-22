@@ -117,7 +117,7 @@ final class JITEnableContext {
         let pairingFileURL = PairingFileStore.prepareURL()
 
         guard FileManager.default.fileExists(atPath: pairingFileURL.path) else {
-            throw makeError("Pairing file not found!", code: -17)
+            throw makeError(String(format: "Pairing file not found!".localized), code: -17)
         }
 
         var pairingFile: OpaquePointer?
@@ -126,11 +126,11 @@ final class JITEnableContext {
         }
 
         if let ffiError {
-            throw error(from: ffiError, fallback: "Failed to read pairing file!")
+            throw error(from: ffiError, fallback: String(format: "Failed to read pairing file!".localized))
         }
 
         guard let pairingFile else {
-            throw makeError("Failed to read pairing file!", code: -17)
+            throw makeError(String(format: "Failed to read pairing file!".localized), code: -17)
         }
 
         return pairingFile
@@ -147,7 +147,7 @@ final class JITEnableContext {
         let deviceIP = DeviceConnectionContext.targetIPAddress
         let parseResult = deviceIP.withCString { inet_pton(AF_INET, $0, &addr.sin_addr) }
         guard parseResult == 1 else {
-            throw makeError("Failed to parse target IP address.", code: -18)
+            throw makeError(String(format: "Failed to parse target IP address.".localized), code: -18)
         }
 
         var tunnel = TunnelHandles()
@@ -169,13 +169,13 @@ final class JITEnableContext {
         }
 
         if let ffiError {
-            throw error(from: ffiError, fallback: "Failed to create tunnel")
+            throw error(from: ffiError, fallback: String(format: "Failed to create tunnel".localized))
         }
 
         guard tunnel.adapter != nil, tunnel.handshake != nil else {
             var incompleteTunnel = tunnel
             incompleteTunnel.free()
-            throw makeError("Tunnel was created without valid handles")
+            throw makeError(String(format: "Tunnel was created without valid handles".localized))
         }
 
         return tunnel
@@ -250,7 +250,7 @@ final class JITEnableContext {
         defer { tunnel.free() }
 
         guard let adapter = tunnel.adapter, let handshake = tunnel.handshake else {
-            throw makeError("Tunnel is not connected")
+            throw makeError(String(format: "Tunnel is not connected".localized))
         }
 
         return try body(adapter, handshake)

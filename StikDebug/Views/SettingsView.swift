@@ -53,7 +53,7 @@ struct SettingsView: View {
 
                 Section {
                     Link(destination: SettingsLinks.githubStars) {
-                        Label("Star on GitHub", systemImage: "star")
+                        Label(String(format: "Star on GitHub".localized), systemImage: "star")
                     }
                 }
 
@@ -61,7 +61,7 @@ struct SettingsView: View {
                     Button {
                         isShowingPairingFilePicker = true
                     } label: {
-                        Label("Import Pairing File", systemImage: "doc.badge.plus")
+                        Label(String(format: "Import Pairing File".localized), systemImage: "doc.badge.plus")
                     }
                     .disabled(isImportingFile)
 
@@ -69,7 +69,7 @@ struct SettingsView: View {
                         HStack(spacing: 10) {
                             ProgressView()
                                 .controlSize(.small)
-                            Text("Importing pairing file…")
+                            Text(String(format: "Importing pairing file…".localized))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -86,8 +86,8 @@ struct SettingsView: View {
                 Section {
                     Toggle(isOn: $keepAliveAudio) {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Silent Audio")
-                            Text("Plays inaudible audio so iOS keeps the app running.")
+                            Text(String(format: "Silent Audio".localized))
+                            Text(String(format: "Plays inaudible audio so iOS keeps the app running.".localized))
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
@@ -98,8 +98,8 @@ struct SettingsView: View {
 
                     Toggle(isOn: $keepAliveLocation) {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Background Location")
-                            Text("Uses low-accuracy location to stay alive when an activity needs it.")
+                            Text(String(format: "Background Location".localized))
+                            Text(String(format: "Uses low-accuracy location to stay alive when an activity needs it.".localized))
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
@@ -108,14 +108,14 @@ struct SettingsView: View {
                     }
 
                 } header: {
-                    Text("Background Keep-Alive")
+                    Text(String(format: "Background Keep-Alive".localized))
                 }
 
                 Section("Behavior") {
                     Toggle(isOn: $overrideTXMDetection) {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Always Run Scripts")
-                            Text("Treats device as TXM-capable to bypass hardware checks.")
+                            Text(String(format: "Always Run Scripts".localized))
+                            Text(String(format: "Treats device as TXM-capable to bypass hardware checks.".localized))
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
@@ -123,16 +123,16 @@ struct SettingsView: View {
 
                 Section("Advanced") {
                     HStack {
-                        Text("Target Device IP")
+                        Text(String(format: "Target Device IP".localized))
                         Spacer()
                         Text(DeviceConnectionContext.defaultTargetIPAddress)
                             .foregroundStyle(.secondary)
                     }
                     Button { openAppFolder() } label: {
-                        Label("App Folder", systemImage: "folder")
+                        Label(String(format: "App Folder".localized), systemImage: "folder")
                     }.foregroundStyle(.primary)
                     Button { showDDIConfirmation = true } label: {
-                        Label("Redownload DDI", systemImage: "arrow.down.circle")
+                        Label(String(format: "Redownload DDI".localized), systemImage: "arrow.down.circle")
                     }.foregroundStyle(.primary).disabled(isRedownloadingDDI)
                     if isRedownloadingDDI {
                         VStack(alignment: .leading, spacing: 4) {
@@ -146,24 +146,24 @@ struct SettingsView: View {
 
                 Section("Help") {
                     Link(destination: SettingsLinks.pairingFileGuide) {
-                        Label("Pairing File Guide", systemImage: "questionmark.circle")
+                        Label(String(format: "Pairing File Guide".localized), systemImage: "questionmark.circle")
                     }
                     Link(destination: SettingsLinks.localDevVPN) {
-                        Label("Download LocalDevVPN", systemImage: "arrow.down.circle")
+                        Label(String(format: "Download LocalDevVPN".localized), systemImage: "arrow.down.circle")
                     }
                     Link(destination: SettingsLinks.discord) {
-                        Label("Discord Support", systemImage: "bubble.left.and.bubble.right")
+                        Label(String(format: "Discord Support".localized), systemImage: "bubble.left.and.bubble.right")
                     }
                 }
 
                 Section {
-                    Text(versionFooter)
+                    Text(String(format: "Version %@".localized, versionFooter))
                         .font(.footnote).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .center)
                         .listRowBackground(Color.clear)
                 }
             }
-            .navigationTitle("Settings")
+            .navigationTitle(String(format: "Settings".localized))
         }
         .fileImporter(
             isPresented: $isShowingPairingFilePicker,
@@ -181,27 +181,27 @@ struct SettingsView: View {
                 do {
                     try PairingFileStore.importFromPicker(url, fileManager: fileManager)
                     isImportingFile = false
-                    pairingImportMessage = ("Imported successfully", false)
+                    pairingImportMessage = (String(format: "Imported successfully".localized), false)
                     startTunnelInBackground()
                     schedulePairingStatusDismiss()
                 } catch {
                     isImportingFile = false
-                    pairingImportMessage = ("Import failed: \(error.localizedDescription)", true)
+                    pairingImportMessage = (String(format: "Import failed: %@".localized, error.localizedDescription), true)
                     schedulePairingStatusDismiss()
                 }
             case .failure(let error):
                 isImportingFile = false
-                pairingImportMessage = ("Import failed: \(error.localizedDescription)", true)
+                pairingImportMessage = (String(format: "Import failed: %@".localized, error.localizedDescription), true)
                 schedulePairingStatusDismiss()
             }
         }
-        .confirmationDialog("Redownload DDI Files?", isPresented: $showDDIConfirmation, titleVisibility: .visible) {
-            Button("Redownload", role: .destructive) {
+        .confirmationDialog(String(format: "Redownload DDI Files?".localized), isPresented: $showDDIConfirmation, titleVisibility: .visible) {
+            Button(String(format: "Redownload".localized), role: .destructive) {
                 redownloadDDIPressed()
             }
-            Button("Cancel", role: .cancel) { }
+            Button(String(format: "Cancel".localized), role: .cancel) { }
         } message: {
-            Text("Existing DDI files will be removed before downloading fresh copies.")
+            Text(String(format: "Existing DDI files will be removed before downloading fresh copies.".localized))
         }
     }
 
@@ -209,11 +209,11 @@ struct SettingsView: View {
         let processInfo = ProcessInfo.processInfo
         let txmLabel: String
         if processInfo.isTXMOverridden {
-            txmLabel = "TXM (Override)"
+            txmLabel = String(format: "TXM (Override)".localized)
         } else {
-            txmLabel = processInfo.hasTXM ? "TXM" : "Non TXM"
+            txmLabel = processInfo.hasTXM ? String(format: "TXM".localized) : String(format: "Non TXM".localized)
         }
-        return "Version \(appVersion) • iOS \(UIDevice.current.systemVersion) • \(txmLabel)"
+        return String(format: "Version %@ • iOS %@ • %@", appVersion, UIDevice.current.systemVersion, txmLabel)
     }
 
     // MARK: - Business Logic
@@ -232,7 +232,7 @@ struct SettingsView: View {
             await MainActor.run {
                 isRedownloadingDDI = true
                 ddiDownloadProgress = 0
-                ddiStatusMessage = "Preparing download…"
+                ddiStatusMessage = String(format: "Preparing download…".localized)
                 ddiResultMessage = nil
             }
             do {
