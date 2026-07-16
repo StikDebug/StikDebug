@@ -56,8 +56,15 @@ let attachResponse = send_command(`vAttach;${pid.toString(16)}`);
 log(`pid = ${pid}`);
 log(`attach_response = ${attachResponse}`);
     
+// `should_continue()` is provided by the host. It returns false when a
+// background keep-alive hold is stopped, letting this loop exit cleanly instead
+// of holding the app forever. It is always true for a normal one-shot JIT run.
+function shouldKeepRunning() {
+    return (typeof should_continue !== 'function') || should_continue();
+}
+
 let totalBreakpoints = 0;
-while (!detached) {
+while (!detached && shouldKeepRunning()) {
     totalBreakpoints++;
     log(`Handling signal ${totalBreakpoints}`);
     

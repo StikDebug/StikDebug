@@ -24,7 +24,9 @@ jobs:
       - name: 2. Configure Xcode Environment
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: '26.0.1'
+          xcode-version: '26.6.0'
+
+
 
       - name: 3. Compile Project Archive
         run: |
@@ -41,6 +43,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             SWIFT_OPTIMIZATION_LEVEL="-Onone" \
             IPHONEOS_DEPLOYMENT_TARGET=17.4
+
 
       - name: 4. Package .app into .ipa
         run: |

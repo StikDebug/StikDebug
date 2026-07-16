@@ -642,6 +642,203 @@ final class JITEnableContext {
         }
     }
 
+    /// Launches an app, attaches the debugger, runs the app's assigned JIT
+    /// script (if any), and *holds* the session open so the app keeps running
+    /// in the background.
+    ///
+    /// A debugger-owned process is not suspended by iOS when it moves to the
+    /// background (the same reason an app run from Xcode keeps executing while
+    /// backgrounded). Attaching also sets `CS_DEBUGGED`, so JIT is enabled too.
+    /// We additionally lift the process memory limit to reduce the chance of a
+    /// background jetsam kill. The hold runs until `cancellation` is set, then we
+    /// interrupt and detach so the app continues running on its own.
+    ///
+    /// - Parameter script: The same JIT-script callback the normal debug path
+    ///   uses. When present it runs once (doing its own attach + JIT enable +
+    ///   continue) before the hold begins, so scripts work in hold mode too;
+    ///   when `nil` the app is simply attached and continued.
+    /// - Note: This keeps StikDebug's connection to *this* app alive; it cannot
+    ///   revive an app iOS has already killed. Requires StikDebug itself to stay
+    ///   running (see `DebugKeepAliveLease`).
+    func keepAppAlive(withBundleID bundleID: String, script: DebugAppCallback?, cancellation: HoldToken, logger: LogFunc?) -> Bool {
+        do {
+            try withConnectedDebugSession { remoteServer, debugProxy in
+                let pid = try withProcessControl(remoteServer: remoteServer) { processControl in
+                    var pid: UInt64 = 0
+                    let ffiError = bundleID.withCString { bundleID in
+                        process_control_launch_app(processControl, bundleID, nil, 0, nil, 0, true, false, &pid)
+                    }
+                    if let ffiError {
+                        throw error(from: ffiError, fallback: "Failed to launch app")
+                    }
+
+                    // Best-effort: lift the memory limit so iOS is less likely to
+                    // jetsam-kill the app while it is in the background.
+                    if let limitError = process_control_disable_memory_limit(processControl, pid) {
+                        let disableError = error(from: limitError, fallback: "Failed to disable memory limit")
+                        emitLog("Keep-alive: could not disable memory limit: \(disableError.localizedDescription)", logger: logger)
+                    }
+
+                    return Int32(truncatingIfNeeded: pid)
+                }
+
+                try holdDebugSession(
+                    pid: pid,
+                    debugProxy: debugProxy,
+                    remoteServer: remoteServer,
+                    script: script,
+                    logger: logger,
+                    cancellation: cancellation
+                )
+            }
+
+            emitLog("Keep-alive session ended for \(bundleID)", logger: logger)
+            return true
+        } catch {
+            emitLog("Keep-alive session failed: \(error.localizedDescription)", logger: logger)
+            return false
+        }
+    }
+
+    private func holdDebugSession(
+        pid: Int32,
+        debugProxy: OpaquePointer,
+        remoteServer: OpaquePointer,
+        script: DebugAppCallback?,
+        logger: LogFunc?,
+        cancellation: HoldToken
+    ) throws {
+        debug_proxy_send_ack(debugProxy)
+        debug_proxy_send_ack(debugProxy)
+
+        do {
+            let response = try sendDebugCommand("QStartNoAckMode", debugProxy: debugProxy) ?? "<nil>"
+            emitLog("Keep-alive QStartNoAckMode = \(response)", logger: logger)
+        } catch {
+            emitLog(error.localizedDescription, logger: logger)
+        }
+
+        debug_proxy_set_ack_mode(debugProxy, 0)
+
+        // Keep the RSD/lockdown tunnel trusted for the whole hold.
+        let heartbeat = try? connectHeartbeatKeepAlive(logger: logger)
+        try? heartbeat?.start()
+        defer { heartbeat?.stop() }
+
+        if let script {
+            // TXM / iOS 26+ JIT: the app requests executable memory at runtime via
+            // `brk #0xf00d` syscalls that the debugger must service. That is exactly
+            // what the JIT script does — it attaches (`vAttach`, enabling JIT),
+            // then loops handling those breakpoints for as long as the app uses
+            // JIT, which also keeps the app alive under the debugger the whole
+            // time. Merely attaching without running the script (the old hold
+            // behavior) left those syscalls unhandled, so the app trapped and hung
+            // on its first JIT call — the bug this fixes.
+            //
+            // The script issues its own attach/continue via `send_command`, so we
+            // must NOT send `vAttach` here (that would double-attach). It runs
+            // until the app detaches or exits; the semaphore blocks until then.
+            // StikDebug itself is held alive across this by the caller's
+            // `DebugKeepAliveLease`.
+            emitLog("Keep-alive: running JIT script (services JIT and holds the app)", logger: logger)
+            let semaphore = DispatchSemaphore(value: 0)
+            script(pid, debugProxy, remoteServer, semaphore)
+            semaphore.wait()
+            emitLog("Keep-alive: JIT script ended (app detached or exited)", logger: logger)
+
+            // If the user stopped the hold (rather than the app detaching on its
+            // own), detach cleanly so the app keeps running instead of being
+            // torn down when the debug connection closes.
+            if cancellation.isCancelled {
+                var interrupt: UInt8 = 0x03
+                _ = debug_proxy_send_raw(debugProxy, &interrupt, 1)
+                usleep(100_000)
+                do {
+                    if let response = try sendDebugCommand("D", debugProxy: debugProxy) {
+                        emitLog("Keep-alive detach response: \(response)", logger: logger)
+                    }
+                } catch {
+                    emitLog(error.localizedDescription, logger: logger)
+                }
+            }
+            return
+        }
+
+        // No script: hold the app by attaching and *actively servicing* the
+        // debug connection. A debugger-owned process is not suspended by iOS in
+        // the background — but a debugged process also stops on every signal or
+        // exception, and if we never answer those stops it stays halted on the
+        // first one, can't service its own run loop, and iOS's watchdog kills it
+        // (which is what looked like the app "crashing" / keep-alive not
+        // working). So we continue on each stop, forwarding real signals so the
+        // app behaves exactly as if it were not being debugged, and keep going
+        // until the app exits or the user stops the hold.
+        let attachCommand = "vAttach;\(String(UInt32(bitPattern: pid), radix: 16))"
+        var stopReply = try sendDebugCommand(attachCommand, debugProxy: debugProxy) ?? ""
+        emitLog("Keep-alive attach response: \(stopReply)", logger: logger)
+        emitLog("Keep-alive: app is running and held under the debugger", logger: logger)
+
+        // Cancellation is re-checked after each stop. While the app runs, the
+        // continue blocks reading the socket — single-threaded, so there is no
+        // concurrent access to the (non-thread-safe) debug proxy. The hold also
+        // ends by itself when the app exits (the natural end when the user
+        // closes it).
+        while !cancellation.isCancelled {
+            // A process-exit reply ("W"/"X") means the app is gone — nothing
+            // left to hold or detach.
+            if stopReply.hasPrefix("W") || stopReply.hasPrefix("X") {
+                emitLog("Keep-alive: app exited (\(stopReply)); ending hold", logger: logger)
+                return
+            }
+
+            do {
+                stopReply = try sendDebugCommand(holdContinueCommand(forStopReply: stopReply), debugProxy: debugProxy) ?? ""
+            } catch {
+                // The connection dropped — the app was killed or the tunnel
+                // died. Stop holding; there is nothing to detach from.
+                emitLog("Keep-alive: debug connection ended (\(error.localizedDescription)); ending hold", logger: logger)
+                return
+            }
+
+            if stopReply.isEmpty {
+                emitLog("Keep-alive: empty stop reply; ending hold", logger: logger)
+                return
+            }
+        }
+
+        // Cancelled by the user: interrupt, then detach, so the app keeps
+        // running on its own afterward.
+        var interrupt: UInt8 = 0x03
+        _ = debug_proxy_send_raw(debugProxy, &interrupt, 1)
+        usleep(100_000)
+        do {
+            if let response = try sendDebugCommand("D", debugProxy: debugProxy) {
+                emitLog("Keep-alive detach response: \(response)", logger: logger)
+            }
+        } catch {
+            emitLog(error.localizedDescription, logger: logger)
+        }
+    }
+
+    /// The continue command used to resume a held app after it stops. Real
+    /// signals are forwarded (`C<sig>`) so the app behaves as if it were not
+    /// under a debugger; debugger artifacts — the SIGSTOP from attaching and
+    /// SIGTRAP traps — are swallowed with a plain continue so they don't
+    /// immediately re-stop or re-trap the app.
+    private func holdContinueCommand(forStopReply reply: String) -> String {
+        guard reply.hasPrefix("T"), reply.count >= 3,
+              let signal = UInt8(reply.dropFirst().prefix(2), radix: 16) else {
+            return "c"
+        }
+
+        switch Int32(signal) {
+        case 0, SIGSTOP, SIGTRAP:
+            return "c"
+        default:
+            return String(format: "C%02x", signal)
+        }
+    }
+
     func startSyslogRelay(handler: @escaping SyslogLineHandler, onError: @escaping SyslogErrorHandler) {
         do {
             try ensureTunnel()

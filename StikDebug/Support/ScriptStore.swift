@@ -72,6 +72,28 @@ enum ScriptStore {
         assignedScript(for: bundleID, fileManager: fileManager) ?? autoScript(for: bundleID, fileManager: fileManager)
     }
 
+    /// The JIT script to run while holding an app alive in the background, or
+    /// `nil` to hold the app with a plain debugger attach.
+    ///
+    /// Only apps with a user-assigned or name-matched (known JIT app) script get
+    /// a script. Those apps request executable memory via `brk #0xf00d` syscalls
+    /// that the script must service, so without it they hang. Apps that do *not*
+    /// use JIT — e.g. Roblox and most games — are deliberately held with a plain
+    /// attach instead: running the JIT breakpoint handler against them makes it
+    /// chase every signal the app raises across all of its threads, which floods
+    /// the log (and can crash a large multi-threaded app or StikDebug itself). A
+    /// plain attach keeps them alive in the background without interfering.
+    ///
+    /// Returns `nil` on non-TXM devices, where JIT comes from `CS_DEBUGGED`
+    /// alone and a plain attach is enough to hold the app.
+    static func keepAliveScript(for bundleID: String, fileManager: FileManager = .default) -> (data: Data, name: String)? {
+        guard ProcessInfo.processInfo.hasTXM else {
+            return nil
+        }
+
+        return preferredScript(for: bundleID, fileManager: fileManager)
+    }
+
     static func favoriteAppName(
         for bundleID: String,
         defaults: UserDefaults? = UserDefaults(suiteName: favoriteAppNamesSuiteName)

@@ -11,8 +11,10 @@ struct HomeView: View {
     @AppStorage("autoQuitAfterEnablingJIT") private var doAutoQuitAfterEnablingJIT = false
     @AppStorage("bundleID") private var bundleID: String = ""
     @AppStorage(UserDefaults.Keys.confirmExternalJITRequests) private var confirmExternalJITRequests = true
+    @AppStorage("keepAppAliveBackground") private var keepAppAliveBackground = false
 
     @ObservedObject private var mounting = MountingProgress.shared
+    @ObservedObject private var aliveManager = BackgroundAliveManager.shared
 
     @State private var hasAppeared = false
     @State private var pendingJITEnableConfiguration: JITEnableConfiguration?
@@ -34,8 +36,26 @@ struct HomeView: View {
         InstalledAppsListView(onSelectApp: { selectedBundle, selectedName in
             bundleID = selectedBundle
             Haptics.medium()
-            startJITInBackground(bundleID: selectedBundle, displayName: selectedName)
-        }, showDoneButton: false, onImportPairingFile: { isShowingPairingFilePicker = true })
+            if keepAppAliveBackground {
+                startKeepAlive(bundleID: selectedBundle, displayName: selectedName)
+            } else {
+                startJITInBackground(bundleID: selectedBundle, displayName: selectedName)
+            }
+        }, showDoneButton: false, onImportPairingFile: { isShowingPairingFilePicker = true }, onHoldApp: { selectedBundle, selectedName in
+            // Selecting an app from the "Other" tab while keep-alive is enabled
+            // holds it in the background (and shows the banner) instead of just
+            // launching it — the same behavior as the JIT tab.
+            bundleID = selectedBundle
+            Haptics.medium()
+            startKeepAlive(bundleID: selectedBundle, displayName: selectedName)
+        })
+        .overlay(alignment: .top) {
+            if let activeApp = aliveManager.activeAppName {
+                keepAliveBanner(appName: activeApp)
+                    .padding(.top, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
         .overlay(alignment: .bottom) {
             if let debugFeedback {
                 debugFeedbackView(debugFeedback)
@@ -43,6 +63,7 @@ struct HomeView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
+        .animation(.default, value: aliveManager.activeAppName)
         .onAppear(perform: handleAppear)
         .onReceive(NotificationCenter.default.publisher(for: .intentJSScriptReady), perform: handleScriptReadyNotification)
         .onReceive(timer) { _ in
@@ -238,6 +259,63 @@ struct HomeView: View {
         }
     }
 
+    private func keepAliveBanner(appName: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "bolt.circle.fill")
+                .foregroundStyle(.green)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(String(format: "Keeping %@ alive".localized, appName))
+                    .font(.subheadline.weight(.semibold))
+                Text("Held in the background".localized)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            Button("Stop".localized) {
+                Haptics.medium()
+                BackgroundAliveManager.shared.stop()
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .tint(.red)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(Capsule().fill(.ultraThinMaterial))
+        .shadow(radius: 4)
+        .padding(.horizontal, 20)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(String(format: "Keeping %@ alive in the background".localized, appName))
+    }
+
+    private func startKeepAlive(bundleID: String, displayName: String?) {
+        let name = displayName ?? bundleID
+        guard !aliveManager.isActive else {
+            showAlert(
+                title: "Keep-Alive Active".localized,
+                message: "StikDebug is already holding an app alive in the background. Stop it before starting another.".localized,
+                showOk: true
+            )
+            return
+        }
+        // Share one cancellation token between the hold and the JIT script so
+        // that stopping the session also stops the script's loop.
+        let token = HoldToken()
+
+        // Resolve the JIT script to run in hold mode. On TXM devices this falls
+        // back to the bundled universal script for apps without an assigned or
+        // name-matched script, so keep-alive services JIT (and actively holds
+        // the debug connection) for *any* app instead of only known ones.
+        var script: DebugAppCallback? = nil
+        if let holdScript = ScriptStore.keepAliveScript(for: bundleID) {
+            script = getJsCallback(holdScript.data, name: holdScript.name, cancellation: token)
+        }
+
+        let startingMessage = String(format: "Keeping %@ alive in the background".localized, name)
+        AccessibilityAnnouncer.announce(startingMessage)
+        BackgroundAliveManager.shared.start(bundleID: bundleID, displayName: displayName, script: script, token: token)
+    }
+
     private func debugFeedbackView(_ feedback: DebugFeedback) -> some View {
         HStack(spacing: 10) {
             if feedback.isWorking {
@@ -259,12 +337,13 @@ struct HomeView: View {
         .accessibilityLabel(feedback.message)
     }
 
-    private func getJsCallback(_ script: Data, name: String? = nil) -> DebugAppCallback {
+    private func getJsCallback(_ script: Data, name: String? = nil, cancellation: HoldToken? = nil) -> DebugAppCallback {
         return { pid, debugProxyHandle, remoteServerHandle, semaphore in
             let model = RunJSViewModel(pid: Int(pid),
                                        debugProxy: debugProxyHandle,
                                        remoteServer: remoteServerHandle,
-                                       semaphore: semaphore)
+                                       semaphore: semaphore,
+                                       cancellation: cancellation)
 
             DispatchQueue.main.async {
                 scriptRunModel = model

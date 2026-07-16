@@ -18,6 +18,7 @@ struct SettingsView: View {
     @AppStorage(UserDefaults.Keys.confirmExternalJITRequests) private var confirmExternalJITRequests = true
     @AppStorage("keepAliveAudio") private var keepAliveAudio = true
     @AppStorage("keepAliveLocation") private var keepAliveLocation = true
+    @AppStorage("keepAppAliveBackground") private var keepAppAliveBackground = false
     @AppStorage(UserDefaults.Keys.targetDeviceIP) private var targetDeviceIP = DeviceConnectionContext.defaultTargetIPAddress
 
     @State private var isShowingPairingFilePicker = false
@@ -105,8 +106,16 @@ struct SettingsView: View {
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
-                    .onChange(of: keepAliveLocation) { _, enabled in
-                        if !enabled { BackgroundLocationManager.shared.stop() }
+                    .onChange(of: keepAliveLocation) { _, _ in
+                        BackgroundLocationManager.shared.refreshFromSettings()
+                    }
+
+                    Toggle(isOn: $keepAppAliveBackground) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Hold App Alive in Background (Experimental)")
+                            Text("Tapping an app keeps the debugger attached so iOS doesn't suspend it in the background. Enables JIT too. Higher battery use; can't revive an app iOS already closed.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                     }
 
                 } header: {

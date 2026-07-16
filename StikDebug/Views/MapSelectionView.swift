@@ -42,14 +42,171 @@ private struct RouteSimulationPlan {
 
 private enum RouteSimulationDefaults {
     static let pathSamplingDistance: CLLocationDistance = 10
+    /// Cap on densified route points. Playback interpolates within segments per
+    /// tick regardless, so coarser spacing on long routes costs no smoothness —
+    /// it just keeps memory, polyline rendering, and sample building bounded.
+    static let maxDisplayCoordinateCount = 25_000
     static let playbackTickInterval: TimeInterval = 0.5
     static let minimumSpeedMetersPerSecond: CLLocationSpeed = 1.0
     static let importedRouteFallbackSpeedMetersPerSecond: CLLocationSpeed = 13.4
 }
 
+/// 10 m spacing for short routes, widening once a route would exceed the
+/// display-point cap (e.g. a 500 km route samples every ~20 m instead).
+private func adaptiveSamplingDistance(for coordinates: [CLLocationCoordinate2D]) -> CLLocationDistance {
+    let totalDistance = distanceAlong(coordinates)
+    return max(
+        RouteSimulationDefaults.pathSamplingDistance,
+        totalDistance / Double(RouteSimulationDefaults.maxDisplayCoordinateCount)
+    )
+}
+
 private struct RoutePlaybackSample {
     let coordinate: CLLocationCoordinate2D
     let delayFromPrevious: TimeInterval
+}
+
+enum SpeedProfile: String, CaseIterable, Identifiable {
+    case walking
+    case jogging
+    case cycling
+    case driving
+    case bus
+    case custom
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .walking: return "Walking"
+        case .jogging: return "Jogging"
+        case .cycling: return "Cycling"
+        case .driving: return "Driving"
+        case .bus: return "Bus"
+        case .custom: return "Custom"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .walking: return "figure.walk"
+        case .jogging: return "figure.run"
+        case .cycling: return "bicycle"
+        case .driving: return "car.fill"
+        case .bus: return "bus.fill"
+        case .custom: return "speedometer"
+        }
+    }
+
+    /// Fixed pace in m/s, or nil when speed comes from road data / user input.
+    var fixedSpeedMetersPerSecond: CLLocationSpeed? {
+        switch self {
+        case .walking: return 1.4
+        case .jogging: return 2.7
+        case .cycling: return 5.5
+        case .driving, .bus, .custom: return nil
+        }
+    }
+
+    /// Walking-ish profiles should route along footpaths, not roads.
+    var prefersWalkingDirections: Bool {
+        switch self {
+        case .walking, .jogging: return true
+        default: return false
+        }
+    }
+}
+
+enum MapDisplayMode: String, CaseIterable, Identifiable {
+    case standard
+    case satellite
+    case hybrid
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .standard: return "Standard"
+        case .satellite: return "Satellite"
+        case .hybrid: return "Hybrid"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .standard: return "map"
+        case .satellite: return "globe.americas.fill"
+        case .hybrid: return "square.2.layers.3d"
+        }
+    }
+
+    /// Pure satellite imagery can't render traffic or labeled points of interest.
+    var supportsOverlays: Bool {
+        self != .satellite
+    }
+}
+
+enum MapPointsOfInterestMode: String, CaseIterable, Identifiable {
+    case all
+    case transit
+    case hidden
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: return "All Places"
+        case .transit: return "Transit Stops"
+        case .hidden: return "Hidden"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .all: return "mappin.and.ellipse"
+        case .transit: return "bus.fill"
+        case .hidden: return "eye.slash"
+        }
+    }
+
+    var categories: PointOfInterestCategories {
+        switch self {
+        case .all: return .all
+        case .transit: return .including([.publicTransport])
+        case .hidden: return .excludingAll
+        }
+    }
+}
+
+private struct SpeedProfileSettings {
+    let profile: SpeedProfile
+    let customSpeedMetersPerSecond: CLLocationSpeed
+
+    static let busSpeedCapMetersPerSecond: CLLocationSpeed = 13.9   // ~50 km/h
+    static let busStopApproachRadius: CLLocationDistance = 60      // begin slowing
+    static let busStopApproachSpeed: CLLocationSpeed = 4.0         // crawl near stops
+    static let busStopDwellSeconds: TimeInterval = 12              // doors open
+    static let busStopSnapRadius: CLLocationDistance = 25          // dwell trigger
+
+    /// Resolve the playback speed for one segment given the road limit (if any).
+    func speed(forRoadLimit roadLimit: CLLocationSpeed?, fallback: CLLocationSpeed) -> CLLocationSpeed {
+        if let fixed = profile.fixedSpeedMetersPerSecond {
+            return fixed
+        }
+        switch profile {
+        case .custom:
+            return max(customSpeedMetersPerSecond, RouteSimulationDefaults.minimumSpeedMetersPerSecond)
+        case .bus:
+            return min(roadLimit ?? fallback, Self.busSpeedCapMetersPerSecond)
+        default: // .driving — original behavior
+            return roadLimit ?? fallback
+        }
+    }
+}
+
+private struct RouteSpeedContext {
+    let ways: [OpenStreetMapWay]
+    let busStops: [CLLocationCoordinate2D]
 }
 
 private struct OpenStreetMapWay {
@@ -60,16 +217,75 @@ private struct OpenStreetMapWay {
 private enum OpenStreetMapSpeedLimitService {
     static let endpoint = URL(string: "https://overpass-api.de/api/interpreter")!
     static let copyrightURL = URL(string: "https://www.openstreetmap.org/copyright")!
-    static let boundingBoxPaddingDegrees = 0.0015
     static let nearestWayThreshold: CLLocationDistance = 40
+
+    // Route chunking. The whole route is split into ~5 km chunks fetched as
+    // independent requests, each queried by its own small bounding box rather
+    // than an `around(radius, points…)` list. `around` costs scale with
+    // points-in-list × candidate-elements-in-area and reliably blew past the
+    // server timeout on anything but the shortest stretches — measured
+    // 16-23s (or outright timeout) for a dense-area chunk that a bbox query
+    // resolved in 3-8s for the same area. A bbox test is an O(1) rectangle
+    // check per candidate regardless of the route's shape, so cost no longer
+    // scales with corridor point density — the actual cause of stops loading
+    // inconsistently (denser areas or longer stretches pushed the old query
+    // past its timeout more often, but never predictably).
+    static let chunkTargetDistance: CLLocationDistance = 5_000 // ~5 km of route per request
+    static let maxChunkCount = 80                              // caps requests on very long routes
+    static let maxConcurrentChunkRequests = 3
+    // Padding around each chunk's tight point bbox. Comfortably larger than
+    // the client-side match thresholds below (40 m ways / 90 m stops) so nothing
+    // near the edge of a chunk is missed by the coarse server-side box.
+    static let chunkBBoxPadding: CLLocationDistance = 120
+    static let chunkServerTimeout: TimeInterval = 20           // Overpass-side [timeout:]
+    static let requestTimeout: TimeInterval = 30               // client-side, per chunk;
+                                                                // must exceed the server timeout with
+                                                                // margin — Overpass still takes several
+                                                                // seconds to flush its own timeout reply
+    static let chunkRetryAttempts = 2                          // total tries per chunk before giving up
+
+    // Physical stops are often mapped twice (platform + stop_position a few
+    // meters apart); merge anything closer than this so markers and dwells
+    // aren't doubled. Opposite-direction stop pairs sit 20 m+ apart and survive.
+    static let busStopDedupeRadius: CLLocationDistance = 15
+
+    // Spatial index cell size (~440 m at the equator). Comfortably larger than
+    // every search radius above, so a ±1 cell ring around a query point always
+    // covers the relevant neighborhood.
+    static let indexCellSizeDegrees = 0.004
+}
+
+/// Integer cell coordinate used by the spatial indexes below.
+private struct SpatialCellKey: Hashable {
+    let x: Int
+    let y: Int
+
+    init(x: Int, y: Int) {
+        self.x = x
+        self.y = y
+    }
+
+    init(latitude: Double, longitude: Double, cellSizeDegrees: Double) {
+        x = Int(floor(longitude / cellSizeDegrees))
+        y = Int(floor(latitude / cellSizeDegrees))
+    }
 }
 
 private struct OverpassResponse: Decodable {
     let elements: [Element]
+    // Present only on a server-side problem (e.g. "runtime error: Query timed
+    // out…"), never on a clean result. Overpass replies HTTP 200 with an empty
+    // `elements` array in this case rather than an error status, so without
+    // checking this field a timed-out chunk looked identical to "no data near
+    // this stretch of route" — the actual cause of stops loading inconsistently.
+    let remark: String?
 
     struct Element: Decodable {
+        let id: Int?
         let tags: [String: String]?
         let geometry: [Coordinate]?
+        let lat: Double?
+        let lon: Double?
     }
 
     struct Coordinate: Decodable {
@@ -205,7 +421,52 @@ private func speedLimitMetersPerSecond(from tags: [String: String]) -> CLLocatio
     return directionalValues.min()
 }
 
-private func overpassQuery(for coordinates: [CLLocationCoordinate2D]) -> String? {
+/// Split the route into chunks of about `chunkTargetDistance` real-world
+/// meters each (walked along the polyline, not raw point count), capped at
+/// `maxChunkCount` chunks so an extremely long route still bounds the number
+/// of requests made. Consecutive chunks share one boundary point so nothing
+/// near a seam falls outside every chunk's bounding box.
+private func routeChunks(from coordinates: [CLLocationCoordinate2D]) -> [[CLLocationCoordinate2D]] {
+    guard coordinates.count > 1 else { return [] }
+
+    let totalDistance = distanceAlong(coordinates)
+    let chunkDistance = max(
+        OpenStreetMapSpeedLimitService.chunkTargetDistance,
+        totalDistance / Double(OpenStreetMapSpeedLimitService.maxChunkCount)
+    )
+
+    var chunks: [[CLLocationCoordinate2D]] = []
+    var current: [CLLocationCoordinate2D] = [coordinates[0]]
+    var accumulated: CLLocationDistance = 0
+
+    for (previous, point) in zip(coordinates, coordinates.dropFirst()) {
+        accumulated += CLLocation(latitude: previous.latitude, longitude: previous.longitude)
+            .distance(from: CLLocation(latitude: point.latitude, longitude: point.longitude))
+        current.append(point)
+        if accumulated >= chunkDistance {
+            chunks.append(current)
+            current = [point] // shared boundary point, so no coverage gap at the seam
+            accumulated = 0
+        }
+    }
+    if current.count > 1 {
+        chunks.append(current)
+    }
+    return chunks
+}
+
+private struct ChunkBoundingBox {
+    let south: Double
+    let west: Double
+    let north: Double
+    let east: Double
+}
+
+/// Tight bounding box of `coordinates`, padded by `paddingMeters`. Since a
+/// straight segment between two consecutive route points lies within their
+/// combined bbox, padding the point-only bbox by at least the largest
+/// client-side match radius guarantees nothing near the true path is missed.
+private func boundingBox(for coordinates: [CLLocationCoordinate2D], paddingMeters: CLLocationDistance) -> ChunkBoundingBox? {
     guard let first = coordinates.first else { return nil }
 
     var minLatitude = first.latitude
@@ -220,33 +481,89 @@ private func overpassQuery(for coordinates: [CLLocationCoordinate2D]) -> String?
         maxLongitude = max(maxLongitude, coordinate.longitude)
     }
 
-    let padding = OpenStreetMapSpeedLimitService.boundingBoxPaddingDegrees
-    let south = minLatitude - padding
-    let west = minLongitude - padding
-    let north = maxLatitude + padding
-    let east = maxLongitude + padding
+    let midLatitudeRadians = (minLatitude + maxLatitude) / 2 * .pi / 180
+    let latitudePadding = paddingMeters / 111_320
+    let longitudePadding = paddingMeters / (111_320 * max(cos(midLatitudeRadians), 0.01))
 
-    let bbox = String(format: "%.6f,%.6f,%.6f,%.6f", south, west, north, east)
+    return ChunkBoundingBox(
+        south: minLatitude - latitudePadding,
+        west: minLongitude - longitudePadding,
+        north: maxLatitude + latitudePadding,
+        east: maxLongitude + longitudePadding
+    )
+}
 
+private func overpassChunkQuery(forBoundingBox bbox: ChunkBoundingBox, includeBusStops: Bool) -> String {
+    let bboxString = String(format: "%.6f,%.6f,%.6f,%.6f", bbox.south, bbox.west, bbox.north, bbox.east)
+
+    // Bus stops are mapped inconsistently in OSM: the legacy `highway=bus_stop`
+    // tag, and the newer public_transport schema (platform / stop_position with
+    // `bus=yes`). One regex clause pulls that superset in a single pass —
+    // `tagsDescribeBusStop` keeps only real bus stops client-side.
+    var busStopClause = ""
+    if includeBusStops {
+        busStopClause = """
+
+          node(\(bboxString))[~"^(highway|public_transport)$"~"^(bus_stop|platform|stop_position)$"];
+        """
+    }
+
+    // A bounding-box filter is an O(1) rectangle test per candidate element,
+    // independent of the chunk's shape or point density — unlike `around`
+    // with a point list, whose cost scales with points × candidates and
+    // reliably exceeded the server timeout on anything but the shortest
+    // stretches. Extra candidates a loose box admits are rejected client-side
+    // by `nearestWayThreshold` / `hasBusStop(within:)`, so precision is
+    // unaffected.
     return """
-    [out:json][timeout:20];
+    [out:json][timeout:\(Int(OpenStreetMapSpeedLimitService.chunkServerTimeout))];
+    way(\(bboxString))[highway]->.roads;
     (
-      way(\(bbox))[highway][maxspeed];
-      way(\(bbox))[highway]["maxspeed:forward"];
-      way(\(bbox))[highway]["maxspeed:backward"];
+      way.roads[maxspeed];
+      way.roads["maxspeed:forward"];
+      way.roads["maxspeed:backward"];\(busStopClause)
     );
     out tags geom;
     """
 }
 
-private func fetchOpenStreetMapWays(for coordinates: [CLLocationCoordinate2D]) async throws -> [OpenStreetMapWay] {
-    guard let query = overpassQuery(for: coordinates) else { return [] }
+private func tagsDescribeBusStop(_ tags: [String: String]) -> Bool {
+    if tags["highway"] == "bus_stop" {
+        return true
+    }
+    let publicTransport = tags["public_transport"]
+    if publicTransport == "platform" || publicTransport == "stop_position" {
+        return tags["bus"] == "yes"
+    }
+    return false
+}
 
-    var components = URLComponents(url: OpenStreetMapSpeedLimitService.endpoint, resolvingAgainstBaseURL: false)
-    components?.queryItems = [URLQueryItem(name: "data", value: query)]
-    guard let url = components?.url else { return [] }
+private struct OverpassChunkResult {
+    let ways: [(id: Int, value: OpenStreetMapWay)]
+    let busStops: [(id: Int, value: CLLocationCoordinate2D)]
+}
 
-    let (data, response) = try await URLSession.shared.data(from: url)
+private func fetchSpeedContextChunk(
+    bbox: ChunkBoundingBox,
+    includeBusStops: Bool
+) async throws -> OverpassChunkResult {
+    let query = overpassChunkQuery(forBoundingBox: bbox, includeBusStops: includeBusStops)
+
+    // POST the query: this stays small since the request body is now just a
+    // bbox rather than a whole corridor of points. The explicit timeout keeps
+    // a slow Overpass server from stalling this chunk — a failed chunk only
+    // costs its own stretch of road data.
+    var request = URLRequest(url: OpenStreetMapSpeedLimitService.endpoint)
+    request.httpMethod = "POST"
+    request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+    request.timeoutInterval = OpenStreetMapSpeedLimitService.requestTimeout
+
+    var formAllowed = CharacterSet.alphanumerics
+    formAllowed.insert(charactersIn: "-._~")
+    let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: formAllowed) ?? ""
+    request.httpBody = "data=\(encodedQuery)".data(using: .utf8)
+
+    let (data, response) = try await URLSession.shared.data(for: request)
 
     if let httpResponse = response as? HTTPURLResponse,
        !(200...299).contains(httpResponse.statusCode) {
@@ -258,58 +575,331 @@ private func fetchOpenStreetMapWays(for coordinates: [CLLocationCoordinate2D]) a
     }
 
     let decoded = try JSONDecoder().decode(OverpassResponse.self, from: data)
-    return decoded.elements.compactMap { element in
-        guard let tags = element.tags,
+
+    // Overpass replies HTTP 200 with an empty `elements` array and a `remark`
+    // when it hits its own timeout or otherwise can't complete the query —
+    // treat that the same as a network failure (retryable) rather than
+    // silently accepting "no data found here".
+    if let remark = decoded.remark {
+        throw NSError(
+            domain: "OpenStreetMapSpeedLimits",
+            code: -2,
+            userInfo: [NSLocalizedDescriptionKey: "Overpass reported an error for this chunk: \(remark)"]
+        )
+    }
+
+    let ways: [(id: Int, value: OpenStreetMapWay)] = decoded.elements.compactMap { element in
+        guard let id = element.id,
+              let tags = element.tags,
               let speedLimit = speedLimitMetersPerSecond(from: tags),
               let geometry = element.geometry?.map({ CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }),
               geometry.count > 1 else {
             return nil
         }
 
-        return OpenStreetMapWay(
+        return (id, OpenStreetMapWay(
             geometry: geometry,
             speedLimitMetersPerSecond: speedLimit
-        )
+        ))
     }
+
+    let busStops: [(id: Int, value: CLLocationCoordinate2D)] = decoded.elements.compactMap { element in
+        guard let id = element.id,
+              let lat = element.lat, let lon = element.lon,
+              let tags = element.tags,
+              tagsDescribeBusStop(tags) else {
+            return nil
+        }
+        return (id, CLLocationCoordinate2D(latitude: lat, longitude: lon))
+    }
+
+    return OverpassChunkResult(ways: ways, busStops: busStops)
 }
 
-private func nearestSpeedLimit(
-    forSegmentFrom start: CLLocationCoordinate2D,
-    to end: CLLocationCoordinate2D,
-    using ways: [OpenStreetMapWay]
-) -> CLLocationSpeed? {
-    let midpoint = MKMapPoint(midpointCoordinate(from: start, to: end))
-    var bestMatch: (speed: CLLocationSpeed, distance: CLLocationDistance)?
+/// Retries a chunk fetch on failure (network error, HTTP error, or a
+/// server-side timeout surfaced via `remark`) with a short backoff — the
+/// public Overpass instance is a shared, load-dependent resource, so a single
+/// slow response shouldn't cost that stretch of the route its data. Returns
+/// `nil` only once every attempt has failed.
+private func fetchSpeedContextChunkWithRetry(
+    bbox: ChunkBoundingBox,
+    includeBusStops: Bool
+) async -> OverpassChunkResult? {
+    let maxAttempts = OpenStreetMapSpeedLimitService.chunkRetryAttempts
+    for attempt in 1...maxAttempts {
+        do {
+            return try await fetchSpeedContextChunk(bbox: bbox, includeBusStops: includeBusStops)
+        } catch {
+            guard attempt < maxAttempts else { return nil }
+            try? await Task.sleep(for: .seconds(Double(attempt) * 1.5))
+        }
+    }
+    return nil
+}
 
-    for way in ways {
-        for (wayStart, wayEnd) in zip(way.geometry, way.geometry.dropFirst()) {
-            let candidateDistance = distanceFromPoint(
-                midpoint,
-                toSegmentFrom: MKMapPoint(wayStart),
-                to: MKMapPoint(wayEnd)
-            )
+/// Merge stops closer together than `radius` — a stop's platform and
+/// stop_position nodes are usually a few meters apart and would otherwise
+/// double every marker and dwell. Grid-bucketed so it stays linear.
+private func dedupedBusStops(
+    _ stops: [CLLocationCoordinate2D],
+    radius: CLLocationDistance
+) -> [CLLocationCoordinate2D] {
+    guard stops.count > 1 else { return stops }
 
-            if bestMatch == nil || candidateDistance < bestMatch!.distance {
-                bestMatch = (way.speedLimitMetersPerSecond, candidateDistance)
+    let cellSize = OpenStreetMapSpeedLimitService.indexCellSizeDegrees
+    var kept: [CLLocationCoordinate2D] = []
+    var grid: [SpatialCellKey: [CLLocationCoordinate2D]] = [:]
+
+    for stop in stops {
+        let location = CLLocation(latitude: stop.latitude, longitude: stop.longitude)
+        let center = SpatialCellKey(
+            latitude: stop.latitude,
+            longitude: stop.longitude,
+            cellSizeDegrees: cellSize
+        )
+
+        var isDuplicate = false
+        search: for dx in -1...1 {
+            for dy in -1...1 {
+                guard let bucket = grid[SpatialCellKey(x: center.x + dx, y: center.y + dy)] else {
+                    continue
+                }
+                for existing in bucket {
+                    let existingLocation = CLLocation(latitude: existing.latitude, longitude: existing.longitude)
+                    if location.distance(from: existingLocation) < radius {
+                        isDuplicate = true
+                        break search
+                    }
+                }
+            }
+        }
+
+        if !isDuplicate {
+            kept.append(stop)
+            grid[center, default: []].append(stop)
+        }
+    }
+
+    return kept
+}
+
+/// Fetches road speed limits (and optionally bus stops) along the route.
+///
+/// The route is split into distance-based chunks, each queried by its own
+/// bounding box, at most `maxConcurrentChunkRequests` in flight, deduplicated
+/// by OSM element id (chunks overlap at their seams). A chunk that still
+/// fails after retrying is tolerated — whatever data arrived from the other
+/// chunks is still used. When bus stops are requested, `onPartialBusStops`
+/// fires with the cumulative deduplicated stops as each chunk lands, so
+/// markers appear progressively instead of after one all-or-nothing query.
+private func fetchRouteSpeedContext(
+    for coordinates: [CLLocationCoordinate2D],
+    includeBusStops: Bool,
+    onPartialBusStops: (@Sendable ([CLLocationCoordinate2D]) -> Void)? = nil
+) async -> RouteSpeedContext {
+    let bboxes = routeChunks(from: coordinates).compactMap {
+        boundingBox(for: $0, paddingMeters: OpenStreetMapSpeedLimitService.chunkBBoxPadding)
+    }
+    guard !bboxes.isEmpty else { return RouteSpeedContext(ways: [], busStops: []) }
+
+    var ways: [OpenStreetMapWay] = []
+    var busStops: [CLLocationCoordinate2D] = []
+    var seenWayIDs: Set<Int> = []
+    var seenStopIDs: Set<Int> = []
+    var failedChunkCount = 0
+
+    await withTaskGroup(of: OverpassChunkResult?.self) { group in
+        var pending = bboxes.makeIterator()
+        var inFlight = 0
+        while inFlight < OpenStreetMapSpeedLimitService.maxConcurrentChunkRequests,
+              let bbox = pending.next() {
+            group.addTask { await fetchSpeedContextChunkWithRetry(bbox: bbox, includeBusStops: includeBusStops) }
+            inFlight += 1
+        }
+
+        for await result in group {
+            if Task.isCancelled {
+                group.cancelAll()
+                break
+            }
+            if let bbox = pending.next() {
+                group.addTask { await fetchSpeedContextChunkWithRetry(bbox: bbox, includeBusStops: includeBusStops) }
+            }
+            guard let result else {
+                failedChunkCount += 1
+                continue
+            }
+
+            for way in result.ways where seenWayIDs.insert(way.id).inserted {
+                ways.append(way.value)
+            }
+
+            var addedStops = false
+            for stop in result.busStops where seenStopIDs.insert(stop.id).inserted {
+                busStops.append(stop.value)
+                addedStops = true
+            }
+
+            if includeBusStops, addedStops {
+                onPartialBusStops?(dedupedBusStops(
+                    busStops,
+                    radius: OpenStreetMapSpeedLimitService.busStopDedupeRadius
+                ))
             }
         }
     }
 
-    guard let bestMatch,
-          bestMatch.distance <= OpenStreetMapSpeedLimitService.nearestWayThreshold else {
-        return nil
+    if failedChunkCount > 0 {
+        LogManager.shared.addWarningLog(
+            "Route data: \(failedChunkCount) of \(bboxes.count) map-data chunks failed after retrying; continuing with partial coverage"
+        )
     }
 
-    return bestMatch.speed
+    return RouteSpeedContext(
+        ways: ways,
+        busStops: dedupedBusStops(
+            busStops,
+            radius: OpenStreetMapSpeedLimitService.busStopDedupeRadius
+        )
+    )
+}
+
+private struct IndexedWaySegment {
+    let start: MKMapPoint
+    let end: MKMapPoint
+    let speedLimitMetersPerSecond: CLLocationSpeed
+}
+
+/// Grid-bucketed index over the Overpass response. The old implementation
+/// rescanned every way segment for every route segment (O(route × ways)),
+/// which made long routes take minutes of CPU; bucketing by ~440 m cells and
+/// probing only the 3×3 neighborhood turns each lookup into a handful of
+/// segment checks. All search radii (≤ 90 m) are far smaller than a cell at
+/// non-polar latitudes, so ring probing never misses a legitimate match.
+private struct RouteSpeedIndex {
+    private var waySegments: [SpatialCellKey: [IndexedWaySegment]] = [:]
+    private var busStopCells: [SpatialCellKey: [CLLocationCoordinate2D]] = [:]
+    private let cellSize = OpenStreetMapSpeedLimitService.indexCellSizeDegrees
+
+    init(context: RouteSpeedContext) {
+        for way in context.ways {
+            for (wayStart, wayEnd) in zip(way.geometry, way.geometry.dropFirst()) {
+                let segment = IndexedWaySegment(
+                    start: MKMapPoint(wayStart),
+                    end: MKMapPoint(wayEnd),
+                    speedLimitMetersPerSecond: way.speedLimitMetersPerSecond
+                )
+                // A segment can cross cell boundaries; register it in every
+                // cell its bounding box touches so ring probes always see it.
+                let minX = Int(floor(min(wayStart.longitude, wayEnd.longitude) / cellSize))
+                let maxX = Int(floor(max(wayStart.longitude, wayEnd.longitude) / cellSize))
+                let minY = Int(floor(min(wayStart.latitude, wayEnd.latitude) / cellSize))
+                let maxY = Int(floor(max(wayStart.latitude, wayEnd.latitude) / cellSize))
+                // Most road segments span a cell or two, but sparsely-noded
+                // rural highways can legitimately run tens of km between OSM
+                // geometry points, so allow a generous span (~57 km at the
+                // equator). Anything larger is broken data — e.g. an
+                // antimeridian jump spans ~90,000 cells — and is skipped rather
+                // than flooding the index. The earlier ≤8-cell cap (~3.5 km)
+                // silently dropped those long segments, so those stretches lost
+                // their real speed limit and fell back to average pacing.
+                let maxCellSpan = 128
+                guard maxX - minX <= maxCellSpan, maxY - minY <= maxCellSpan else { continue }
+                for x in minX...maxX {
+                    for y in minY...maxY {
+                        waySegments[SpatialCellKey(x: x, y: y), default: []].append(segment)
+                    }
+                }
+            }
+        }
+
+        for stop in context.busStops {
+            let key = SpatialCellKey(
+                latitude: stop.latitude,
+                longitude: stop.longitude,
+                cellSizeDegrees: cellSize
+            )
+            busStopCells[key, default: []].append(stop)
+        }
+    }
+
+    func nearestSpeedLimit(
+        forSegmentFrom start: CLLocationCoordinate2D,
+        to end: CLLocationCoordinate2D
+    ) -> CLLocationSpeed? {
+        guard !waySegments.isEmpty else { return nil }
+
+        let midpoint = midpointCoordinate(from: start, to: end)
+        let midMapPoint = MKMapPoint(midpoint)
+        let center = SpatialCellKey(
+            latitude: midpoint.latitude,
+            longitude: midpoint.longitude,
+            cellSizeDegrees: cellSize
+        )
+
+        var bestMatch: (speed: CLLocationSpeed, distance: CLLocationDistance)?
+        for dx in -1...1 {
+            for dy in -1...1 {
+                guard let bucket = waySegments[SpatialCellKey(x: center.x + dx, y: center.y + dy)] else {
+                    continue
+                }
+                for segment in bucket {
+                    let candidateDistance = distanceFromPoint(
+                        midMapPoint,
+                        toSegmentFrom: segment.start,
+                        to: segment.end
+                    )
+                    if bestMatch == nil || candidateDistance < bestMatch!.distance {
+                        bestMatch = (segment.speedLimitMetersPerSecond, candidateDistance)
+                    }
+                }
+            }
+        }
+
+        guard let bestMatch,
+              bestMatch.distance <= OpenStreetMapSpeedLimitService.nearestWayThreshold else {
+            return nil
+        }
+
+        return bestMatch.speed
+    }
+
+    func hasBusStop(within radius: CLLocationDistance, of coordinate: CLLocationCoordinate2D) -> Bool {
+        guard !busStopCells.isEmpty else { return false }
+
+        let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+        let center = SpatialCellKey(
+            latitude: coordinate.latitude,
+            longitude: coordinate.longitude,
+            cellSizeDegrees: cellSize
+        )
+
+        for dx in -1...1 {
+            for dy in -1...1 {
+                guard let bucket = busStopCells[SpatialCellKey(x: center.x + dx, y: center.y + dy)] else {
+                    continue
+                }
+                for stop in bucket {
+                    let stopLocation = CLLocation(latitude: stop.latitude, longitude: stop.longitude)
+                    if location.distance(from: stopLocation) <= radius {
+                        return true
+                    }
+                }
+            }
+        }
+        return false
+    }
 }
 
 private func buildPlaybackSamples(
     from displayCoordinates: [CLLocationCoordinate2D],
-    speedWays: [OpenStreetMapWay],
-    fallbackSpeedMetersPerSecond: CLLocationSpeed
+    speedContext: RouteSpeedContext,
+    fallbackSpeedMetersPerSecond: CLLocationSpeed,
+    speedSettings: SpeedProfileSettings
 ) -> [RoutePlaybackSample] {
     guard let firstCoordinate = displayCoordinates.first else { return [] }
 
+    let speedIndex = RouteSpeedIndex(context: speedContext)
     var samples = [RoutePlaybackSample(coordinate: firstCoordinate, delayFromPrevious: 0)]
 
     for (start, end) in zip(displayCoordinates, displayCoordinates.dropFirst()) {
@@ -317,8 +907,22 @@ private func buildPlaybackSamples(
             .distance(from: CLLocation(latitude: end.latitude, longitude: end.longitude))
         guard segmentDistance > 0 else { continue }
 
-        let speedLimit = nearestSpeedLimit(forSegmentFrom: start, to: end, using: speedWays) ?? fallbackSpeedMetersPerSecond
-        let clampedSpeed = max(speedLimit, RouteSimulationDefaults.minimumSpeedMetersPerSecond)
+        let roadLimit = speedIndex.nearestSpeedLimit(forSegmentFrom: start, to: end)
+        var speed = speedSettings.speed(forRoadLimit: roadLimit, fallback: fallbackSpeedMetersPerSecond)
+
+        // Bus mode: ease off when approaching a stop.
+        if speedSettings.profile == .bus,
+           !speedContext.busStops.isEmpty {
+            let midpoint = midpointCoordinate(from: start, to: end)
+            if speedIndex.hasBusStop(
+                within: SpeedProfileSettings.busStopApproachRadius,
+                of: midpoint
+            ) {
+                speed = min(speed, SpeedProfileSettings.busStopApproachSpeed)
+            }
+        }
+
+        let clampedSpeed = max(speed, RouteSimulationDefaults.minimumSpeedMetersPerSecond)
         let segmentTravelTime = segmentDistance / clampedSpeed
         let segmentStepCount = max(1, Int(ceil(segmentTravelTime / RouteSimulationDefaults.playbackTickInterval)))
         let stepDelay = segmentTravelTime / Double(segmentStepCount)
@@ -335,19 +939,101 @@ private func buildPlaybackSamples(
         }
     }
 
+    // Bus mode: dwell once at each stop along the route (doors open, people shuffle).
+    if speedSettings.profile == .bus, !speedContext.busStops.isEmpty, samples.count > 1 {
+        // Bucket the samples by grid cell so each stop only compares against
+        // nearby samples instead of the entire (potentially huge) sample list.
+        let cellSize = OpenStreetMapSpeedLimitService.indexCellSizeDegrees
+        var sampleCells: [SpatialCellKey: [Int]] = [:]
+        for (index, sample) in samples.enumerated() {
+            let key = SpatialCellKey(
+                latitude: sample.coordinate.latitude,
+                longitude: sample.coordinate.longitude,
+                cellSizeDegrees: cellSize
+            )
+            sampleCells[key, default: []].append(index)
+        }
+
+        var dwellIndices: Set<Int> = []
+        for stop in speedContext.busStops {
+            let stopLocation = CLLocation(latitude: stop.latitude, longitude: stop.longitude)
+            let center = SpatialCellKey(
+                latitude: stop.latitude,
+                longitude: stop.longitude,
+                cellSizeDegrees: cellSize
+            )
+            var bestIndex: Int?
+            var bestDistance = SpeedProfileSettings.busStopSnapRadius
+            for dx in -1...1 {
+                for dy in -1...1 {
+                    guard let bucket = sampleCells[SpatialCellKey(x: center.x + dx, y: center.y + dy)] else {
+                        continue
+                    }
+                    for index in bucket {
+                        let sample = samples[index]
+                        let distance = stopLocation.distance(
+                            from: CLLocation(
+                                latitude: sample.coordinate.latitude,
+                                longitude: sample.coordinate.longitude
+                            )
+                        )
+                        if distance <= bestDistance {
+                            bestDistance = distance
+                            bestIndex = index
+                        }
+                    }
+                }
+            }
+            if let bestIndex, bestIndex > 0 {
+                dwellIndices.insert(bestIndex)
+            }
+        }
+
+        if !dwellIndices.isEmpty {
+            samples = samples.enumerated().map { index, sample in
+                guard dwellIndices.contains(index) else { return sample }
+                return RoutePlaybackSample(
+                    coordinate: sample.coordinate,
+                    delayFromPrevious: sample.delayFromPrevious + SpeedProfileSettings.busStopDwellSeconds
+                )
+            }
+        }
+    }
+
     return samples
+}
+
+private struct RoutePlaybackPrefetchResult {
+    let samples: [RoutePlaybackSample]
+    let busStops: [CLLocationCoordinate2D]
 }
 
 private func prefetchRoutePlaybackSamples(
     displayCoordinates: [CLLocationCoordinate2D],
-    fallbackSpeedMetersPerSecond: CLLocationSpeed
-) async -> [RoutePlaybackSample] {
-    let speedWays = (try? await fetchOpenStreetMapWays(for: displayCoordinates)) ?? []
-    return buildPlaybackSamples(
+    fallbackSpeedMetersPerSecond: CLLocationSpeed,
+    speedSettings: SpeedProfileSettings,
+    onPartialBusStops: (@Sendable ([CLLocationCoordinate2D]) -> Void)? = nil
+) async -> RoutePlaybackPrefetchResult {
+    let needsRoadData = speedSettings.profile.fixedSpeedMetersPerSecond == nil
+        && speedSettings.profile != .custom
+    let context: RouteSpeedContext
+    if needsRoadData {
+        context = await fetchRouteSpeedContext(
+            for: displayCoordinates,
+            includeBusStops: speedSettings.profile == .bus,
+            onPartialBusStops: onPartialBusStops
+        )
+    } else {
+        // Fixed/custom pace: no need to bother Overpass at all.
+        context = RouteSpeedContext(ways: [], busStops: [])
+    }
+    let samples = buildPlaybackSamples(
         from: displayCoordinates,
-        speedWays: speedWays,
-        fallbackSpeedMetersPerSecond: fallbackSpeedMetersPerSecond
+        speedContext: context,
+        fallbackSpeedMetersPerSecond: fallbackSpeedMetersPerSecond,
+        speedSettings: speedSettings
     )
+    return RoutePlaybackPrefetchResult(samples: samples, busStops: context.busStops)
 }
 
 private enum CoordinateImportError: LocalizedError {
@@ -749,6 +1435,8 @@ struct LocationSimulationView: View {
     @State private var routePlan: RouteSimulationPlan?
     @State private var routePolyline: MKPolyline?
     @State private var routePlaybackSamples: [RoutePlaybackSample] = []
+    @State private var routeBusStops: [CLLocationCoordinate2D] = []
+    @State private var visibleLatitudeDelta: CLLocationDegrees = 0.05
     @State private var routePlaybackCoordinate: CLLocationCoordinate2D?
     @State private var simulatedCoordinate: CLLocationCoordinate2D?
     @State private var routeRequestID = UUID()
@@ -766,6 +1454,96 @@ struct LocationSimulationView: View {
     @State private var showBookmarks = false
     @State private var showSaveBookmark = false
     @State private var newBookmarkName = ""
+
+    // Map appearance
+    @AppStorage("mapDisplayMode") private var mapDisplayModeRawValue: String = MapDisplayMode.standard.rawValue
+    @AppStorage("mapShowsTraffic") private var mapShowsTraffic: Bool = false
+    @AppStorage("mapPointsOfInterestMode") private var mapPointsOfInterestRawValue: String = MapPointsOfInterestMode.all.rawValue
+
+    // Speed profile
+    @AppStorage("routeSpeedProfile") private var speedProfileRawValue: String = SpeedProfile.driving.rawValue
+    @AppStorage("routeSpeedCustomKmh") private var customSpeedKmh: Double = 30
+    @State private var showCustomSpeedPrompt = false
+    @State private var customSpeedInput = ""
+    @State private var lastFallbackSpeed: CLLocationSpeed = RouteSimulationDefaults.importedRouteFallbackSpeedMetersPerSecond
+    @State private var isImportedRoute = false
+
+    private var mapDisplayMode: MapDisplayMode {
+        MapDisplayMode(rawValue: mapDisplayModeRawValue) ?? .standard
+    }
+
+    private var mapPointsOfInterestMode: MapPointsOfInterestMode {
+        MapPointsOfInterestMode(rawValue: mapPointsOfInterestRawValue) ?? .all
+    }
+
+    private var mapStyle: MapStyle {
+        switch mapDisplayMode {
+        case .standard:
+            return .standard(
+                elevation: .realistic,
+                pointsOfInterest: mapPointsOfInterestMode.categories,
+                showsTraffic: mapShowsTraffic
+            )
+        case .satellite:
+            return .imagery(elevation: .realistic)
+        case .hybrid:
+            return .hybrid(
+                elevation: .realistic,
+                pointsOfInterest: mapPointsOfInterestMode.categories,
+                showsTraffic: mapShowsTraffic
+            )
+        }
+    }
+
+    /// Bus stop markers to actually draw on the map. Two adjustments on top of
+    /// the raw fetched `routeBusStops`:
+    ///
+    /// - Honors "Points of Interest: Hidden" — the stops are drawn as our own
+    ///   Marker overlay, not Apple's native POI layer, so Apple's
+    ///   `pointsOfInterest` style option (set from the same picker) has no
+    ///   effect on them; that had to be handled here explicitly.
+    /// - Thins markers as the map zooms out, since a bus route easily has
+    ///   dozens of stops that overlap into an unreadable stack of pins at a
+    ///   city-wide zoom. Spacing scales with the visible latitude span so
+    ///   roughly the same number of markers are visible on screen at any
+    ///   zoom level; the full-fidelity `routeBusStops` list (used for dwell
+    ///   pacing during playback) is untouched.
+    private var displayedBusStops: [CLLocationCoordinate2D] {
+        guard speedProfile == .bus, mapPointsOfInterestMode != .hidden else { return [] }
+        let visibleSpanMeters = visibleLatitudeDelta * 111_320
+        let minimumSpacing = max(
+            SpeedProfileSettings.busStopSnapRadius,
+            visibleSpanMeters / 25
+        )
+        return dedupedBusStops(routeBusStops, radius: minimumSpacing)
+    }
+
+    private var speedProfile: SpeedProfile {
+        SpeedProfile(rawValue: speedProfileRawValue) ?? .driving
+    }
+
+    private var speedSettings: SpeedProfileSettings {
+        SpeedProfileSettings(
+            profile: speedProfile,
+            customSpeedMetersPerSecond: max(customSpeedKmh, 1) / 3.6
+        )
+    }
+
+    private var speedProfileDetailText: String {
+        switch speedProfile {
+        case .custom:
+            return String(format: "%.0f km/h", max(customSpeedKmh, 1))
+        case .bus:
+            return "Road speed, pauses at stops"
+        case .driving:
+            return "Road speed limits"
+        default:
+            if let fixed = speedProfile.fixedSpeedMetersPerSecond {
+                return String(format: "%.0f km/h", fixed * 3.6)
+            }
+            return ""
+        }
+    }
 
     private var pairingFilePath: String {
         PairingFileStore.prepareURL().path
@@ -810,7 +1588,17 @@ struct LocationSimulationView: View {
             value: routePlan.distance / 1000,
             unit: UnitLength.kilometers
         ).formatted(.measurement(width: .abbreviated, usage: .road))
-        let durationText = Self.routeDurationFormatter.string(from: routePlan.expectedTravelTime)
+
+        let travelTime: TimeInterval
+        if let fixed = speedProfile.fixedSpeedMetersPerSecond {
+            travelTime = routePlan.distance / fixed
+        } else if speedProfile == .custom {
+            travelTime = routePlan.distance / speedSettings.customSpeedMetersPerSecond
+        } else {
+            travelTime = routePlan.expectedTravelTime
+        }
+
+        let durationText = Self.routeDurationFormatter.string(from: travelTime)
         if let durationText, !durationText.isEmpty {
             return "\(distanceText) • ETA \(durationText)"
         }
@@ -884,6 +1672,10 @@ struct LocationSimulationView: View {
                             MapPolyline(routePolyline)
                                 .stroke(.blue.opacity(0.8), lineWidth: 5)
                         }
+                        ForEach(Array(displayedBusStops.enumerated()), id: \.offset) { _, stop in
+                            Marker("Bus Stop", systemImage: "bus.fill", coordinate: stop)
+                                .tint(.orange)
+                        }
                         if let routeStartCoordinate {
                             Marker("Start", coordinate: routeStartCoordinate)
                                 .tint(.green)
@@ -901,7 +1693,7 @@ struct LocationSimulationView: View {
                             .tint(.red)
                     }
                 }
-                .mapStyle(.standard(elevation: .realistic))
+                .mapStyle(mapStyle)
                 .onTapGesture { point in
                     if let loc = proxy.convert(point, from: .local) {
                         applySelection(loc)
@@ -909,6 +1701,9 @@ struct LocationSimulationView: View {
                 }
                 .mapControls {
                     MapCompass()
+                }
+                .onMapCameraChange(frequency: .onEnd) { context in
+                    visibleLatitudeDelta = context.region.span.latitudeDelta
                 }
             }
                 .ignoresSafeArea()
@@ -951,6 +1746,8 @@ struct LocationSimulationView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItemGroup(placement: .topBarLeading) {
+                mapStyleMenu
+
                 Button {
                     showBookmarks = true
                 } label: {
@@ -996,6 +1793,14 @@ struct LocationSimulationView: View {
             Button("Cancel", role: .cancel) { newBookmarkName = "" }
         } message: {
             Text("Enter a name for this location.")
+        }
+        .alert("Custom Speed", isPresented: $showCustomSpeedPrompt) {
+            TextField("Speed (km/h)", text: $customSpeedInput)
+                .keyboardType(.decimalPad)
+            Button("Set") { applyCustomSpeedInput() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Enter a playback speed in km/h.")
         }
         .sheet(isPresented: $showBookmarks) {
             BookmarksView(bookmarks: $bookmarks) { bookmark in
@@ -1159,6 +1964,7 @@ struct LocationSimulationView: View {
         routeRequestID = UUID()
         setRoutePlan(nil)
         routePlaybackSamples = []
+        routeBusStops = []
         routePlaybackCoordinate = nil
         isLoadingRoute = false
         isPrefetchingRouteSpeeds = false
@@ -1166,7 +1972,7 @@ struct LocationSimulationView: View {
 
         let displayCoordinates = sampledRouteCoordinates(
             from: coordinates,
-            targetDistance: RouteSimulationDefaults.pathSamplingDistance
+            targetDistance: adaptiveSamplingDistance(for: coordinates)
         )
 
         guard displayCoordinates.count > 1,
@@ -1177,6 +1983,7 @@ struct LocationSimulationView: View {
 
         let distance = distanceAlong(displayCoordinates)
         let fallbackSpeed = RouteSimulationDefaults.importedRouteFallbackSpeedMetersPerSecond
+        isImportedRoute = true
         routeStartSelection = RouteSearchSelection(title: "\(sourceName) Start", coordinate: firstCoordinate)
         routeEndSelection = RouteSearchSelection(title: "\(sourceName) End", coordinate: lastCoordinate)
         setRoutePlan(RouteSimulationPlan(
@@ -1192,15 +1999,25 @@ struct LocationSimulationView: View {
         let requestID = UUID()
         routeRequestID = requestID
         isPrefetchingRouteSpeeds = true
+        lastFallbackSpeed = fallbackSpeed
+        let settings = speedSettings
         routeSpeedPrefetchTask = Task.detached(priority: .utility) {
-            let playbackSamples = await prefetchRoutePlaybackSamples(
+            let prefetch = await prefetchRoutePlaybackSamples(
                 displayCoordinates: displayCoordinates,
-                fallbackSpeedMetersPerSecond: fallbackSpeed
+                fallbackSpeedMetersPerSecond: fallbackSpeed,
+                speedSettings: settings,
+                onPartialBusStops: { stops in
+                    Task { @MainActor in
+                        guard routeRequestID == requestID else { return }
+                        routeBusStops = stops
+                    }
+                }
             )
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 guard routeRequestID == requestID else { return }
-                routePlaybackSamples = playbackSamples
+                routePlaybackSamples = prefetch.samples
+                routeBusStops = prefetch.busStops
                 isPrefetchingRouteSpeeds = false
             }
         }
@@ -1262,6 +2079,8 @@ struct LocationSimulationView: View {
 
             routeAttributionLink
 
+            speedProfileMenu
+
             HStack(spacing: 12) {
                 Button("Stop", action: clear)
                     .buttonStyle(.bordered)
@@ -1282,6 +2101,139 @@ struct LocationSimulationView: View {
                 Button("Reset", action: resetRouteSelection)
                     .buttonStyle(.bordered)
                     .disabled(isBusy || isRouteRunning)
+            }
+        }
+    }
+
+    private var mapStyleMenu: some View {
+        Menu {
+            Picker("Map Type", selection: $mapDisplayModeRawValue) {
+                ForEach(MapDisplayMode.allCases) { mode in
+                    Label(mode.title, systemImage: mode.systemImage)
+                        .tag(mode.rawValue)
+                }
+            }
+
+            if mapDisplayMode.supportsOverlays {
+                Toggle(isOn: $mapShowsTraffic) {
+                    Label("Traffic", systemImage: "car.2.fill")
+                }
+
+                Picker("Points of Interest", selection: $mapPointsOfInterestRawValue) {
+                    ForEach(MapPointsOfInterestMode.allCases) { mode in
+                        Label(mode.title, systemImage: mode.systemImage)
+                            .tag(mode.rawValue)
+                    }
+                }
+                .pickerStyle(.menu)
+            }
+        } label: {
+            Image(systemName: "map.fill")
+        }
+        .accessibilityLabel("Map style: \(mapDisplayMode.title)")
+    }
+
+    private var speedProfileMenu: some View {
+        Menu {
+            ForEach(SpeedProfile.allCases) { profile in
+                Button {
+                    selectSpeedProfile(profile)
+                } label: {
+                    if profile == speedProfile {
+                        Label(profile.title, systemImage: "checkmark")
+                    } else {
+                        Label(profile.title, systemImage: profile.systemImage)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: speedProfile.systemImage)
+                Text(speedProfile.title)
+                    .font(.subheadline.weight(.medium))
+                if !speedProfileDetailText.isEmpty {
+                    Text(speedProfileDetailText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+        }
+        .buttonStyle(.bordered)
+        .tint(.blue)
+        .disabled(isBusy || isRouteRunning || isPrefetchingRouteSpeeds)
+        .accessibilityLabel("Playback speed: \(speedProfile.title)")
+    }
+
+    private func selectSpeedProfile(_ profile: SpeedProfile) {
+        if profile == .custom {
+            customSpeedInput = String(format: "%.0f", max(customSpeedKmh, 1))
+            showCustomSpeedPrompt = true
+            return
+        }
+        guard profile != speedProfile else { return }
+        let directionsChanged = profile.prefersWalkingDirections != speedProfile.prefersWalkingDirections
+        speedProfileRawValue = profile.rawValue
+
+        // Searched routes can be re-planned along footpaths; imported routes keep
+        // their exact geometry and only get their pacing rebuilt.
+        if directionsChanged,
+           !isImportedRoute,
+           routeStartSelection != nil,
+           routeEndSelection != nil {
+            refreshRoute()
+        } else {
+            rebuildPlaybackSamplesForCurrentRoute()
+        }
+    }
+
+    private func applyCustomSpeedInput() {
+        let normalized = customSpeedInput.replacingOccurrences(of: ",", with: ".")
+        guard let value = Double(normalized), value > 0 else {
+            alertTitle = "Invalid Speed"
+            alertMessage = "Enter a speed above 0 km/h."
+            showAlert = true
+            return
+        }
+        customSpeedKmh = min(value, 1000)
+        speedProfileRawValue = SpeedProfile.custom.rawValue
+        rebuildPlaybackSamplesForCurrentRoute()
+    }
+
+    private func rebuildPlaybackSamplesForCurrentRoute() {
+        guard let routePlan, !isRouteRunning else { return }
+
+        routeSpeedPrefetchTask?.cancel()
+        let requestID = UUID()
+        routeRequestID = requestID
+        isPrefetchingRouteSpeeds = true
+
+        let displayCoordinates = routePlan.displayCoordinates
+        let fallbackSpeed = lastFallbackSpeed
+        let settings = speedSettings
+
+        routeSpeedPrefetchTask = Task.detached(priority: .utility) {
+            let prefetch = await prefetchRoutePlaybackSamples(
+                displayCoordinates: displayCoordinates,
+                fallbackSpeedMetersPerSecond: fallbackSpeed,
+                speedSettings: settings,
+                onPartialBusStops: { stops in
+                    Task { @MainActor in
+                        guard routeRequestID == requestID else { return }
+                        routeBusStops = stops
+                    }
+                }
+            )
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard routeRequestID == requestID else { return }
+                routePlaybackSamples = prefetch.samples
+                routeBusStops = prefetch.busStops
+                isPrefetchingRouteSpeeds = false
             }
         }
     }
@@ -1420,6 +2372,7 @@ struct LocationSimulationView: View {
         routeStartSelection = nil
         routeEndSelection = nil
         routePlaybackSamples = []
+        routeBusStops = []
         routePlaybackCoordinate = nil
         isLoadingRoute = false
         isPrefetchingRouteSpeeds = false
@@ -1430,6 +2383,8 @@ struct LocationSimulationView: View {
         routeSpeedPrefetchTask?.cancel()
         setRoutePlan(nil)
         routePlaybackSamples = []
+        routeBusStops = []
+        isImportedRoute = false
 
         guard let routeStart = routeStartSelection?.coordinate,
               let routeEnd = routeEndSelection?.coordinate else {
@@ -1447,7 +2402,7 @@ struct LocationSimulationView: View {
         request.source = MKMapItem(placemark: MKPlacemark(coordinate: routeStart))
         request.destination = MKMapItem(placemark: MKPlacemark(coordinate: routeEnd))
         request.requestsAlternateRoutes = false
-        request.transportType = .automobile
+        request.transportType = speedProfile.prefersWalkingDirections ? .walking : .automobile
 
         routeLoadTask = Task {
             do {
@@ -1461,9 +2416,10 @@ struct LocationSimulationView: View {
                     )
                 }
 
+                let routeCoordinates = route.polyline.coordinateArray
                 let displayCoordinates = sampledRouteCoordinates(
-                    from: route.polyline.coordinateArray,
-                    targetDistance: RouteSimulationDefaults.pathSamplingDistance
+                    from: routeCoordinates,
+                    targetDistance: adaptiveSamplingDistance(for: routeCoordinates)
                 )
                 let routePlan = RouteSimulationPlan(
                     displayCoordinates: displayCoordinates,
@@ -1487,16 +2443,26 @@ struct LocationSimulationView: View {
 
                 await MainActor.run {
                     guard routeRequestID == requestID else { return }
+                    lastFallbackSpeed = fallbackSpeed
+                    let settings = speedSettings
                     routeSpeedPrefetchTask?.cancel()
                     routeSpeedPrefetchTask = Task.detached(priority: .utility) {
-                        let playbackSamples = await prefetchRoutePlaybackSamples(
+                        let prefetch = await prefetchRoutePlaybackSamples(
                             displayCoordinates: displayCoordinates,
-                            fallbackSpeedMetersPerSecond: fallbackSpeed
+                            fallbackSpeedMetersPerSecond: fallbackSpeed,
+                            speedSettings: settings,
+                            onPartialBusStops: { stops in
+                                Task { @MainActor in
+                                    guard routeRequestID == requestID else { return }
+                                    routeBusStops = stops
+                                }
+                            }
                         )
                         guard !Task.isCancelled else { return }
                         await MainActor.run {
                             guard routeRequestID == requestID else { return }
-                            routePlaybackSamples = playbackSamples
+                            routePlaybackSamples = prefetch.samples
+                            routeBusStops = prefetch.busStops
                             isPrefetchingRouteSpeeds = false
                         }
                     }
