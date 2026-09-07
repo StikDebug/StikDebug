@@ -135,7 +135,7 @@ struct SettingsView: View {
                 Section("Debugging") {
                     Toggle(isOn: $mallocDebug) {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("MallocGuardEdges / MallocScribble")
+                            Text("Malloc Debugging")
                             Text("Attaches processes with MallocGuardEdges and MallocScribble to detect memory corruption.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
