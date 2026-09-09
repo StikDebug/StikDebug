@@ -19,6 +19,7 @@ struct SettingsView: View {
     @AppStorage("keepAliveAudio") private var keepAliveAudio = true
     @AppStorage("keepAliveLocation") private var keepAliveLocation = true
     @AppStorage(UserDefaults.Keys.targetDeviceIP) private var targetDeviceIP = DeviceConnectionContext.defaultTargetIPAddress
+    @AppStorage(UserDefaults.Keys.mallocDebug) private var mallocDebug = false
 
     @State private var isShowingPairingFilePicker = false
     @State private var isImportingFile = false
@@ -126,6 +127,16 @@ struct SettingsView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Always Run Scripts")
                             Text("Treats device as TXM-capable to bypass hardware checks.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Section("Debugging") {
+                    Toggle(isOn: $mallocDebug) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Malloc Debugging")
+                            Text("Attaches processes with MallocGuardEdges and MallocScribble to detect memory corruption.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
