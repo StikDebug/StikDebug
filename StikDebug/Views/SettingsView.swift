@@ -143,16 +143,14 @@ struct SettingsView: View {
                 }
 
                 Section("Advanced") {
-                    HStack {
+                    VStack(alignment: .leading, spacing: 6) {
                         Text("Target Device IP")
-                        Spacer()
                         TextField(DeviceConnectionContext.defaultTargetIPAddress, text: $targetDeviceIP)
-                            .multilineTextAlignment(.trailing)
                             .foregroundStyle(.secondary)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled(true)
                             .keyboardType(.numbersAndPunctuation)
-                            .frame(maxWidth: 160)
+                            .accessibilityLabel("Target Device IP")
                     }
                     Button { openAppFolder() } label: {
                         Label("App Folder", systemImage: "folder")

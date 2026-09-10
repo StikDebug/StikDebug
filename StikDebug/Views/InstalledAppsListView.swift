@@ -65,14 +65,15 @@ struct InstalledAppsListView: View {
                     placement: .navigationBarDrawer(displayMode: .always),
                     prompt: selectedTab.searchPrompt
                 )
-                .toolbar {
-                    tabPickerToolbarItem
-                    leadingToolbarItem
-                    trailingToolbarItem
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    tabPicker
                 }
-        }
-        .overlay {
-            launchFeedbackOverlay
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    launchFeedbackBanner
+                }
+                .toolbar {
+                    appActionsToolbarItems
+                }
         }
         .onAppear(perform: refreshIconPrefetch)
         .onChange(of: favoriteApps) { _, _ in prefetchPriorityIcons() }
@@ -129,65 +130,63 @@ struct InstalledAppsListView: View {
         )
     }
 
-    @ToolbarContentBuilder
-    private var tabPickerToolbarItem: some ToolbarContent {
-        ToolbarItem(placement: .principal) {
-            Picker("", selection: $selectedTab) {
-                ForEach(AppListTab.allCases) { tab in
-                    Text(tab.title.localized).tag(tab)
-                }
+    private var tabPicker: some View {
+        Picker("App category", selection: $selectedTab) {
+            ForEach(AppListTab.allCases) { tab in
+                Text(tab.title.localized).tag(tab)
             }
-            .pickerStyle(.segmented)
-            .frame(width: 220)
         }
+        .pickerStyle(.segmented)
+        .accessibilityLabel("App category")
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+        .background(.bar)
     }
 
     @ToolbarContentBuilder
-    private var leadingToolbarItem: some ToolbarContent {
-        if let onImportPairingFile {
-            ToolbarItem(placement: .navigationBarLeading) {
+    private var appActionsToolbarItems: some ToolbarContent {
+        ToolbarItemGroup(placement: .primaryAction) {
+            if let onImportPairingFile {
                 Button(action: onImportPairingFile) {
-                    Image(systemName: "doc.badge.plus")
+                    Label("Import Pairing File", systemImage: "doc.badge.plus")
                 }
             }
+            if !showDoneButton {
+                Button {
+                    viewModel.refreshAppLists()
+                } label: {
+                    Label("Refresh Apps", systemImage: "arrow.clockwise")
+                }
+                .disabled(viewModel.isLoading)
+            }
         }
-    }
-
-    @ToolbarContentBuilder
-    private var trailingToolbarItem: some ToolbarContent {
-        ToolbarItem(placement: .navigationBarTrailing) {
-            if showDoneButton {
+        if showDoneButton {
+            ToolbarItem(placement: .confirmationAction) {
                 Button("Done") {
                     dismiss()
                 }
                 .fontWeight(.semibold)
-            } else {
-                Button {
-                    viewModel.refreshAppLists()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .disabled(viewModel.isLoading)
             }
         }
     }
 
     @ViewBuilder
-    private var launchFeedbackOverlay: some View {
+    private var launchFeedbackBanner: some View {
         if let launchFeedback {
-            VStack {
-                Spacer()
-                Text(launchFeedback.message)
-                    .font(.subheadline.weight(.semibold))
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(Capsule().fill(.ultraThinMaterial))
-                    .foregroundStyle(launchFeedback.success ? .green : .red)
-                    .shadow(radius: 4)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                    .padding(.bottom, 40)
-            }
-            .animation(.spring(response: 0.3, dampingFraction: 0.8), value: launchFeedback.id)
+            Text(launchFeedback.message)
+                .font(.subheadline.weight(.semibold))
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+                .foregroundStyle(launchFeedback.success ? .green : .red)
+                .shadow(radius: 4)
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .animation(.spring(response: 0.3, dampingFraction: 0.8), value: launchFeedback.id)
         }
     }
 

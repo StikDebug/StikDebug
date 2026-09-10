@@ -13,6 +13,7 @@ struct ScriptEditorView: View {
     let scriptURL: URL
 
     @State private var scriptContent: String = ""
+    @State private var hasLoadedScript = false
     @State private var position: CodeEditor.Position = .init()
     @State private var messages: Set<TextLocated<Message>> = []
 
@@ -39,7 +40,6 @@ struct ScriptEditorView: View {
                 .environment(\.codeEditorTheme, editorTheme)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .ignoresSafeArea(edges: .bottom)
         }
         .navigationTitle(scriptURL.lastPathComponent)
         .navigationBarTitleDisplayMode(.inline)
@@ -57,6 +57,9 @@ struct ScriptEditorView: View {
     }
 
     private func loadScript() {
+        // A display transition may make the editor appear again. Preserve drafts.
+        guard !hasLoadedScript else { return }
+        hasLoadedScript = true
         scriptContent = (try? String(contentsOf: scriptURL)) ?? ""
     }
 

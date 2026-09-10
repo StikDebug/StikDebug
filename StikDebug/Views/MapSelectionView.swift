@@ -24,6 +24,14 @@ private struct CoordinateSnapshot: Equatable {
     }
 }
 
+private struct SimulationControlsHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 private struct RouteSearchSelection {
     let title: String
     let coordinate: CLLocationCoordinate2D
@@ -726,6 +734,7 @@ final class LocationSearchCompleter: NSObject, ObservableObject, MKLocalSearchCo
 struct LocationSimulationView: View {
     @State private var coordinate: CLLocationCoordinate2D?
     @State private var position: MapCameraPosition = .userLocation(fallback: .automatic)
+    @State private var simulationControlsHeight: CGFloat = 0
 
     @State private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
     @State private var resendTimer: Timer?
@@ -859,10 +868,7 @@ struct LocationSimulationView: View {
             }
         }
         .listStyle(.plain)
-        .frame(maxHeight: 350)
-        .scrollDisabled(true)
-        .padding(.horizontal, 16)
-        .padding(.top, 8)
+        .scrollDismissesKeyboard(.interactively)
     }
 
     @ViewBuilder
@@ -876,113 +882,122 @@ struct LocationSimulationView: View {
     }
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            MapReader { proxy in
-                Map(position: $position) {
-                    if hasRouteContext {
-                        if let routePolyline {
-                            MapPolyline(routePolyline)
-                                .stroke(.blue.opacity(0.8), lineWidth: 5)
-                        }
-                        if let routeStartCoordinate {
-                            Marker("Start", coordinate: routeStartCoordinate)
-                                .tint(.green)
-                        }
-                        if let routeEndCoordinate {
-                            Marker("End", coordinate: routeEndCoordinate)
+        GeometryReader { geometry in
+            // Reserve overlay spacing even when the keyboard reduces the visible map.
+            let panelHeight = max(0, geometry.size.height - 40)
+
+            ZStack(alignment: .bottom) {
+                MapReader { proxy in
+                    Map(position: $position) {
+                        if hasRouteContext {
+                            if let routePolyline {
+                                MapPolyline(routePolyline)
+                                    .stroke(.blue.opacity(0.8), lineWidth: 5)
+                            }
+                            if let routeStartCoordinate {
+                                Marker("Start", coordinate: routeStartCoordinate)
+                                    .tint(.green)
+                            }
+                            if let routeEndCoordinate {
+                                Marker("End", coordinate: routeEndCoordinate)
+                                    .tint(.red)
+                            }
+                            if let routePlaybackCoordinate {
+                                Marker("Current", coordinate: routePlaybackCoordinate)
+                                    .tint(.blue)
+                            }
+                        } else if let coordinate {
+                            Marker("Pin", coordinate: coordinate)
                                 .tint(.red)
                         }
-                        if let routePlaybackCoordinate {
-                            Marker("Current", coordinate: routePlaybackCoordinate)
-                                .tint(.blue)
+                    }
+                    .mapStyle(.standard(elevation: .realistic))
+                    .onTapGesture { point in
+                        if let loc = proxy.convert(point, from: .local) {
+                            applySelection(loc)
                         }
-                    } else if let coordinate {
-                        Marker("Pin", coordinate: coordinate)
-                            .tint(.red)
+                    }
+                    .mapControls {
+                        MapCompass()
                     }
                 }
-                .mapStyle(.standard(elevation: .realistic))
-                .onTapGesture { point in
-                    if let loc = proxy.convert(point, from: .local) {
-                        applySelection(loc)
-                    }
-                }
-                .mapControls {
-                    MapCompass()
-                }
-            }
-                .ignoresSafeArea()
-                .onChange(of: coordinate.map(CoordinateSnapshot.init)) { _, new in
-                    if let new {
-                        position = .region(
-                            MKCoordinateRegion(
-                                center: new.coordinate,
-                                latitudinalMeters: 1000,
-                                longitudinalMeters: 1000
+                    .ignoresSafeArea()
+                    .onChange(of: coordinate.map(CoordinateSnapshot.init)) { _, new in
+                        if let new {
+                            position = .region(
+                                MKCoordinateRegion(
+                                    center: new.coordinate,
+                                    latitudinalMeters: 1000,
+                                    longitudinalMeters: 1000
+                                )
                             )
-                        )
+                        }
                     }
-                }
-
-            VStack(spacing: 0) {
-                if !searchCompleter.results.isEmpty {
-                    searchResultsList
-                }
-
-                Spacer()
 
                 VStack(spacing: 12) {
-                    if isImportingCoordinates {
-                        ProgressView("Importing coordinates…")
-                            .font(.footnote)
+                    if !searchCompleter.results.isEmpty {
+                        searchResultsList
+                            .frame(maxWidth: 600)
+                            .frame(height: min(350, panelHeight * 0.4))
                     }
 
-                    if hasRouteContext {
-                        routeControls
-                    } else {
-                        pinControls
+                    Spacer(minLength: 0)
+
+                    ScrollView {
+                        simulationControls
+                            .fixedSize(horizontal: false, vertical: true)
+                            .background {
+                                GeometryReader { controlsGeometry in
+                                    Color.clear.preference(
+                                        key: SimulationControlsHeightKey.self,
+                                        value: controlsGeometry.size.height
+                                    )
+                                }
+                            }
                     }
+                    .scrollBounceBehavior(.basedOnSize)
+                    .onPreferenceChange(SimulationControlsHeightKey.self) {
+                        simulationControlsHeight = $0
+                    }
+                    .frame(maxWidth: 600)
+                    .frame(height: min(simulationControlsHeight, panelHeight * 0.45))
+                    .background(.regularMaterial, in: .rect(cornerRadius: 16))
+                    .clipShape(.rect(cornerRadius: 16))
                 }
-                .padding(.bottom, 24)
                 .padding(.horizontal, 16)
-                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
             }
         }
         .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $searchText, prompt: "Search location…")
+        .autocorrectionDisabled()
+        .onChange(of: searchText) { _, newValue in
+            searchCompleter.update(query: newValue)
+        }
+        .onSubmit(of: .search) {
+            applyCoordinatesFromSearchText()
+        }
         .toolbar {
             ToolbarItemGroup(placement: .topBarLeading) {
                 Button {
                     showBookmarks = true
                 } label: {
-                    Image(systemName: "bookmark.fill")
+                    Label("Bookmarks", systemImage: "bookmark.fill")
                 }
 
                 Button {
                     showRouteSearch = true
                 } label: {
-                    Image(systemName: "point.topleft.down.curvedto.point.bottomright.up")
+                    Label("Plan Route", systemImage: "point.topleft.down.curvedto.point.bottomright.up")
                 }
                 .disabled(isBusy || isRouteRunning)
 
                 Button {
                     showCoordinateImporter = true
                 } label: {
-                    Image(systemName: "square.and.arrow.down")
+                    Label("Import Coordinates", systemImage: "square.and.arrow.down")
                 }
                 .disabled(isBusy || isRouteRunning || isImportingCoordinates)
-                .accessibilityLabel("Import Coordinates")
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                TextField("Search location...", text: $searchText)
-                    .padding(.leading, 6)
-                    .autocorrectionDisabled()
-                    .submitLabel(.go)
-                    .onChange(of: searchText) { _, newValue in
-                        searchCompleter.update(query: newValue)
-                    }
-                    .onSubmit {
-                        applyCoordinatesFromSearchText()
-                    }
             }
         }
         .alert(alertTitle, isPresented: $showAlert) {
@@ -1212,6 +1227,24 @@ struct LocationSimulationView: View {
         showAlert = true
     }
 
+    private var simulationControls: some View {
+        VStack(spacing: 12) {
+            if isImportingCoordinates {
+                ProgressView("Importing coordinates…")
+                    .font(.footnote)
+            }
+
+            if hasRouteContext {
+                routeControls
+            } else {
+                pinControls
+            }
+        }
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: .infinity)
+        .padding(12)
+    }
+
     @ViewBuilder
     private var pinControls: some View {
         if let coord = coordinate {
@@ -1219,30 +1252,43 @@ struct LocationSimulationView: View {
                 .font(.footnote.monospaced())
                 .foregroundStyle(.secondary)
 
-            HStack(spacing: 12) {
-                Button("Stop", action: clear)
-                    .buttonStyle(.bordered)
-                    .tint(.red)
-                    .disabled(!pairingExists || isBusy || !hasActiveSimulation)
-
-                Button("Simulate Location", action: simulate)
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!pairingExists || isBusy || isLoadingRoute)
-
-                Button {
-                    showSaveBookmark = true
-                } label: {
-                    Image(systemName: "bookmark")
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    pinActionButtons
                 }
-                .buttonStyle(.bordered)
-                .tint(.blue)
-                .disabled(isRouteRunning)
+                .fixedSize(horizontal: true, vertical: false)
+
+                VStack(spacing: 8) {
+                    pinActionButtons
+                }
             }
         } else {
             Text("Tap map to drop pin")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    @ViewBuilder
+    private var pinActionButtons: some View {
+        Button("Stop", action: clear)
+            .buttonStyle(.bordered)
+            .tint(.red)
+            .disabled(!pairingExists || isBusy || !hasActiveSimulation)
+
+        Button("Simulate Location", action: simulate)
+            .buttonStyle(.borderedProminent)
+            .disabled(!pairingExists || isBusy || isLoadingRoute)
+
+        Button {
+            showSaveBookmark = true
+        } label: {
+            Label("Save Bookmark", systemImage: "bookmark")
+                .labelStyle(.iconOnly)
+        }
+        .buttonStyle(.bordered)
+        .tint(.blue)
+        .disabled(isRouteRunning)
     }
 
     private var routeControls: some View {
@@ -1262,28 +1308,40 @@ struct LocationSimulationView: View {
 
             routeAttributionLink
 
-            HStack(spacing: 12) {
-                Button("Stop", action: clear)
-                    .buttonStyle(.bordered)
-                    .tint(.red)
-                    .disabled(!pairingExists || isBusy || !hasActiveSimulation)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    routeActionButtons
+                }
+                .fixedSize(horizontal: true, vertical: false)
 
-                Button("Play Route", action: simulateRoute)
-                    .buttonStyle(.borderedProminent)
-                    .disabled(
-                        !pairingExists ||
-                        isBusy ||
-                        isLoadingRoute ||
-                        isPrefetchingRouteSpeeds ||
-                        routePlan == nil ||
-                        routePlaybackSamples.isEmpty
-                    )
-
-                Button("Reset", action: resetRouteSelection)
-                    .buttonStyle(.bordered)
-                    .disabled(isBusy || isRouteRunning)
+                VStack(spacing: 8) {
+                    routeActionButtons
+                }
             }
         }
+    }
+
+    @ViewBuilder
+    private var routeActionButtons: some View {
+        Button("Stop", action: clear)
+            .buttonStyle(.bordered)
+            .tint(.red)
+            .disabled(!pairingExists || isBusy || !hasActiveSimulation)
+
+        Button("Play Route", action: simulateRoute)
+            .buttonStyle(.borderedProminent)
+            .disabled(
+                !pairingExists ||
+                isBusy ||
+                isLoadingRoute ||
+                isPrefetchingRouteSpeeds ||
+                routePlan == nil ||
+                routePlaybackSamples.isEmpty
+            )
+
+        Button("Reset", action: resetRouteSelection)
+            .buttonStyle(.bordered)
+            .disabled(isBusy || isRouteRunning)
     }
 
     private func simulate() {

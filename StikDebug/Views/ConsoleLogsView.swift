@@ -50,16 +50,19 @@ struct ConsoleLogsView: View {
             }
             .navigationTitle("Console")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .principal) {
-                    Picker("", selection: $selectedConsoleTab) {
-                        Text("App").tag(ConsoleTab.idevice)
-                        Text("System").tag(ConsoleTab.syslog)
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(width: 180)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                Picker("Log source", selection: $selectedConsoleTab) {
+                    Text("App").tag(ConsoleTab.idevice)
+                    Text("System").tag(ConsoleTab.syslog)
                 }
-                ToolbarItem(placement: .navigationBarTrailing) {
+                .pickerStyle(.segmented)
+                .accessibilityLabel("Log source")
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+                .background(.bar)
+            }
+            .toolbar {
+                ToolbarItemGroup(placement: .primaryAction) {
                     Menu {
                         if selectedConsoleTab == .idevice {
                             Button("Refresh", systemImage: "arrow.clockwise") {
@@ -87,7 +90,7 @@ struct ConsoleLogsView: View {
                             }
                         }
                     } label: {
-                        Image(systemName: "ellipsis.circle")
+                        Label("Console Actions", systemImage: "ellipsis.circle")
                     }
                 }
             }
@@ -107,7 +110,7 @@ struct ConsoleLogsView: View {
                 Text("Choose how quickly new relay entries appear.")
             }
         }
-                .onDisappear {
+        .onDisappear {
             systemLogStream.stop()
         }
         .onChange(of: systemLogStream.lastError) { _, newError in
@@ -124,24 +127,24 @@ struct ConsoleLogsView: View {
                 LazyVStack(spacing: 0) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("=== DEVICE INFORMATION ===")
-                            .font(.system(size: 11, design: .monospaced))
+                            .font(.caption2.monospaced())
                             .foregroundColor(colorScheme == .dark ? .white : .black)
                             .padding(.vertical, 4)
 
                         Text("iOS Version: \(UIDevice.current.systemVersion)")
-                            .font(.system(size: 11, design: .monospaced))
+                            .font(.caption2.monospaced())
                             .foregroundColor(colorScheme == .dark ? .white : .black)
 
                         Text("Device: \(UIDevice.current.name)")
-                            .font(.system(size: 11, design: .monospaced))
+                            .font(.caption2.monospaced())
                             .foregroundColor(colorScheme == .dark ? .white : .black)
 
                         Text("Model: \(UIDevice.current.model)")
-                            .font(.system(size: 11, design: .monospaced))
+                            .font(.caption2.monospaced())
                             .foregroundColor(colorScheme == .dark ? .white : .black)
 
                         Text("=== LOG ENTRIES ===")
-                            .font(.system(size: 11, design: .monospaced))
+                            .font(.caption2.monospaced())
                             .foregroundColor(colorScheme == .dark ? .white : .black)
                             .padding(.vertical, 4)
                     }
@@ -199,8 +202,10 @@ struct ConsoleLogsView: View {
                     Button {
                         syslogSearchText = ""
                     } label: {
-                        Image(systemName: "xmark.circle.fill")
+                        Label("Clear Filter", systemImage: "xmark.circle.fill")
+                            .labelStyle(.iconOnly)
                             .foregroundStyle(.secondary)
+                            .frame(minWidth: 44, minHeight: 44)
                     }
                 }
             }
@@ -501,7 +506,7 @@ private struct AppLogRow: View, Equatable {
 
     var body: some View {
         Text(AttributedString(attributedString))
-            .font(.system(size: 11, design: .monospaced))
+            .font(.caption2.monospaced())
             .textSelection(.enabled)
             .lineLimit(nil)
             .fixedSize(horizontal: false, vertical: true)
@@ -550,7 +555,7 @@ private struct SyslogRow: View, Equatable {
 
     var body: some View {
         Text(AttributedString(attributedString))
-            .font(.system(size: 11, design: .monospaced))
+            .font(.caption2.monospaced())
             .textSelection(.enabled)
             .lineLimit(nil)
             .frame(maxWidth: .infinity, alignment: .leading)

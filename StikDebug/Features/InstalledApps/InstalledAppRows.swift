@@ -44,23 +44,12 @@ struct AppButton: View {
 
     var body: some View {
         Button(action: selectApp) {
-            HStack(spacing: loadAppIconsOnJIT ? 16 : 12) {
-                AppIconView(image: loadAppIconsOnJIT ? iconLoader.image : nil)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(appName)
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-
-                    Text(bundleID)
-                        .font(.system(size: 14))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .textSelection(.enabled)
-                }
-
-                Spacer()
+            HStack(alignment: .top, spacing: 12) {
+                AppRowIdentity(
+                    appName: appName,
+                    bundleID: bundleID,
+                    image: loadAppIconsOnJIT ? iconLoader.image : nil
+                )
 
                 if favoriteApps.contains(bundleID) {
                     Image(systemName: "star.fill")
@@ -239,6 +228,8 @@ struct AppButton: View {
 }
 
 struct LaunchAppRow: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     let bundleID: String
     let appName: String
     let isLaunching: Bool
@@ -265,26 +256,17 @@ struct LaunchAppRow: View {
             guard !isLaunching else { return }
             launchAction()
         } label: {
-            HStack(spacing: loadAppIconsOnJIT ? 16 : 12) {
-                AppIconView(image: loadAppIconsOnJIT ? iconLoader.image : nil)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(appName)
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-
-                    Text(bundleID)
-                        .font(.system(size: 14))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .textSelection(.enabled)
-                }
-
-                Spacer()
+            rowLayout {
+                AppRowIdentity(
+                    appName: appName,
+                    bundleID: bundleID,
+                    image: loadAppIconsOnJIT ? iconLoader.image : nil
+                )
 
                 if isLaunching {
-                    ProgressView().controlSize(.small)
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(minWidth: 44, minHeight: 44)
                 } else {
                     Text("Launch".localized)
                         .font(.footnote.weight(.semibold))
@@ -292,6 +274,8 @@ struct LaunchAppRow: View {
                         .padding(.vertical, 6)
                         .background(Capsule().fill(Color.accentColor.opacity(0.18)))
                         .foregroundStyle(Color.accentColor)
+                        .fixedSize()
+                        .frame(minHeight: 44)
                 }
             }
             .padding(.vertical, loadAppIconsOnJIT ? 4 : 8)
@@ -319,6 +303,12 @@ struct LaunchAppRow: View {
         }
     }
 
+    private var rowLayout: AnyLayout {
+        dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
+            : AnyLayout(HStackLayout(spacing: 12))
+    }
+
     private var accessibilityValue: String {
         let state = isLaunching ? "Launching".localized : "Ready".localized
         return "\(state), \(String(format: "Bundle ID %@".localized, bundleID))"
@@ -329,6 +319,43 @@ struct LaunchAppRow: View {
             return
         }
         iconLoader.beginLoading()
+    }
+}
+
+private struct AppRowIdentity: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    let appName: String
+    let bundleID: String
+    let image: UIImage?
+
+    var body: some View {
+        identityLayout {
+            AppIconView(image: image)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(appName)
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text(bundleID)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var identityLayout: AnyLayout {
+        dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+            : AnyLayout(HStackLayout(spacing: 12))
     }
 }
 

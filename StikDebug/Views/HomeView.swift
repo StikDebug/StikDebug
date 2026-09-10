@@ -36,10 +36,10 @@ struct HomeView: View {
             Haptics.medium()
             startJITInBackground(bundleID: selectedBundle, displayName: selectedName)
         }, showDoneButton: false, onImportPairingFile: { isShowingPairingFilePicker = true })
-        .overlay(alignment: .bottom) {
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             if let debugFeedback {
                 debugFeedbackView(debugFeedback)
-                    .padding(.bottom, 40)
+                    .padding(.vertical, 8)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
