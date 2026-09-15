@@ -1568,7 +1568,12 @@ struct LocationSimulationView: View {
     }
 
     private func locationUpdateCode(for coordinate: CLLocationCoordinate2D) -> Int32 {
-        simulate_location(deviceIP, coordinate.latitude, coordinate.longitude, pairingFilePath)
+        // Map coordinates arrive in whatever datum MapKit is rendering. Inside
+        // mainland China that is GCJ-02, while the simulation service expects
+        // WGS-84, so convert here -- the single point where picked coordinates
+        // leave this view. Elsewhere this is a no-op.
+        let wgs84 = ChinaCoordinateTransform.wgs84(fromGCJ02: coordinate)
+        return simulate_location(deviceIP, wgs84.latitude, wgs84.longitude, pairingFilePath)
     }
 }
 
