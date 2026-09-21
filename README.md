@@ -128,6 +128,31 @@ StikDebug enables **JIT** for sideloaded apps on iOS 17.4+ without needing a com
 
 After install, follow the JIT setup steps above (pairing import, etc.).
 
+### Native library and iOS 27 developer image
+
+Before building from source, run `python3 scripts/prepare_idevice.py`. It downloads
+the official idevice 0.1.68 iOS archive, verifies its pinned SHA-256 checksum, and
+installs the matching library and header. The larger native library is downloaded
+instead of being stored in Git.
+
+The IPA workflow also runs `python3 scripts/prepare_cryptex_ddi.py --output build/BundledCryptexDDI`
+and copies that directory to the app bundle root. For a direct Xcode build, prepare
+the same directory and include it as a folder resource named `BundledCryptexDDI`.
+All four payloads are checked against the manifest's SHA-384 digests; the download
+is pinned to an immutable revision of the DeveloperDiskImage repository.
+
+On iOS 27 with the Cryptex service available, StikDebug personalizes and mounts
+this generic image. It does not require the legacy manifest to list the device's
+chip/board identity. Other systems retain the existing personalized mounting path.
+
+The Cryptex implementation was tested on `iPhone19,2`, iOS 27.0: after confirming
+that no developer image was mounted, StikDebug mounted it independently and
+enabled JIT for MeloNX. The existing game reached its title screen at about
+60 FPS. Other models and older iOS versions still need regression testing.
+
+Run `swift test` to check generic image validation, including all four payload
+digests, missing files, and manifest paths outside the verified directory.
+
 ## Contributing
 
 Thank you for your interest in contributing to this project. Contributions of all kinds are welcome.
