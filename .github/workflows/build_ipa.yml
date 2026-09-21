@@ -29,6 +29,15 @@ jobs:
         with:
           xcode-version: '26.6'
 
+      - name: Test Cryptex image validation
+        run: swift test
+
+      - name: Prepare checksum-pinned idevice with Cryptex support
+        run: python3 scripts/prepare_idevice.py
+
+      - name: Prepare verified generic developer image
+        run: python3 scripts/prepare_cryptex_ddi.py --output build/BundledCryptexDDI
+
       - name: 3. Compile Project Archive
         run: |
           xcodebuild clean archive \
@@ -48,6 +57,7 @@ jobs:
       - name: 4. Package .app into .ipa
         run: |
           cp -R build/StikDebug.xcarchive/Products/Applications/StikDebug.app .
+          cp -R build/BundledCryptexDDI StikDebug.app/BundledCryptexDDI
           mkdir -p Payload
           cp -R StikDebug.app Payload/
           zip -r StikDebug.ipa Payload
