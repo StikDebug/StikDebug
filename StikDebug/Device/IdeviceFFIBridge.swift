@@ -292,6 +292,11 @@ extension JITEnableContext {
     }
 
     func mountPersonalDDI(withImagePath imagePath: String, trustcachePath: String, manifestPath: String) throws {
+        if #available(iOS 27, *),
+           let directory = Bundle.main.url(forResource: "BundledCryptexDDI", withExtension: nil),
+           try mountCryptexDDIIfAvailable(in: directory) {
+            return
+        }
         let imageData = try IdeviceBridge.mappedFileData(atPath: imagePath, description: "developer disk image")
         let trustcacheData = try IdeviceBridge.mappedFileData(atPath: trustcachePath, description: "developer disk image trust cache")
         let manifestData = try IdeviceBridge.mappedFileData(atPath: manifestPath, description: "developer disk image manifest")
@@ -349,6 +354,37 @@ extension JITEnableContext {
                     throw IdeviceBridge.consumeFFIError(ffiError, fallback: "Failed to mount personalized DDI")
                 }
             }
+        }
+    }
+
+    /// Use Apple's generic Cryptex identity on iOS 27. New hardware can lack a
+    /// legacy personalized identity even in the newest Xcode developer image.
+    private func mountCryptexDDIIfAvailable(in directory: URL) throws -> Bool {
+        try CryptexDDI.validate(in: directory)
+        return try IdeviceBridge.withTunnelHandles(for: self) { adapter, handshake in
+            var available = false
+            if let error = rsd_service_available(handshake, "com.apple.security.cryptexd.remote", &available) {
+                throw IdeviceBridge.consumeFFIError(error, fallback: "Failed to query Cryptex mounting support")
+            }
+            guard available else { return false }
+
+            var assets: OpaquePointer?
+            if let error = cryptex1_assets_load(directory.path, &assets) {
+                throw IdeviceBridge.consumeFFIError(error, fallback: "Failed to load the verified Cryptex DDI")
+            }
+            guard let assets else { throw IdeviceBridge.makeError(message: "Cryptex assets were not created") }
+            defer { cryptex1_assets_free(assets) }
+
+            var installed: UnsafeMutablePointer<InstalledCryptexC>?
+            defer { cryptexd_free_installed_cryptex(installed) }
+            if let error = cryptexd_install_ddi(adapter, handshake, assets, &installed) {
+                throw IdeviceBridge.consumeFFIError(error, fallback: "Failed to mount the Cryptex DDI")
+            }
+            guard let installed, let identifier = installed.pointee.identifier,
+                  String(cString: identifier) == "com.apple.MobileAsset.DDI" else {
+                throw IdeviceBridge.makeError(message: "Cryptex install did not confirm a mounted developer image")
+            }
+            return true
         }
     }
 
