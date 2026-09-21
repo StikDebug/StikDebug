@@ -95,3 +95,9 @@ iOSInjectionProject/
 .DS_Store
 .vscode/settings.json
 .vscode 
+
+# Prepared by scripts/prepare_idevice.py from a checksum-pinned release.
+StikDebug/idevice/libidevice_ffi.a
+.build/
+.swiftpm/
+__pycache__/
