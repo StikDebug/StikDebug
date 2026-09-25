@@ -22,7 +22,8 @@ extension ScriptStore {
                 "touchHLE",
                 "HyperHLE",
                 "Applesauce",
-                "RPCS3"
+                "RPCS3",
+                "AetherPS4"
             ],
             resource: ScriptResource(resourceName: "universal", fileName: "universal.js")
         ),
