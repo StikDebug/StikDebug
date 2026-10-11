@@ -9,6 +9,99 @@ import Foundation
 import idevice
 import Darwin
 
+final class RemotePairingPortResolver: NSObject, NetServiceBrowserDelegate, NetServiceDelegate {
+    static let fallback: UInt16 = 49152
+    private static let overrideKey = "TunnelRemotePairingPort"
+    private static let stateLock = NSLock()
+    private static var selectedEndpoint = "Not attempted yet"
+
+    /// The precise port and discovery method used for the latest connection attempt.
+    static var lastAttemptDescription: String {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return selectedEndpoint
+    }
+
+    private static func record(port: UInt16, source: String) {
+        let endpoint = "\(DeviceConnectionContext.targetIPAddress):\(port) [\(source)]"
+        stateLock.lock()
+        selectedEndpoint = endpoint
+        stateLock.unlock()
+        NSLog("[StikDebug] Remote Pairing selected endpoint: %@", endpoint)
+    }
+
+    private let browser = NetServiceBrowser()
+    private var services: [NetService] = []
+    private var resolvedPort: UInt16?
+    private var resolvedServiceName: String?
+    private var discoveryError: String?
+
+    /// Resolve on a worker thread with an active run loop. An explicit Settings
+    /// override takes precedence when multicast DNS cannot see the local service.
+    static func resolve(timeout: TimeInterval = 5) -> UInt16 {
+        let override = (UserDefaults.standard.string(forKey: overrideKey) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !override.isEmpty, let port = UInt16(override), port != 0 {
+            record(port: port, source: "manual override")
+            return port
+        }
+        if !override.isEmpty {
+            NSLog("[StikDebug] Ignoring invalid manual Remote Pairing port: %@", override)
+        }
+
+        let worker = RemotePairingPortResolver()
+        let completion = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .utility).async {
+            worker.search(timeout: timeout)
+            completion.signal()
+        }
+        guard completion.wait(timeout: .now() + timeout + 1) == .success else {
+            record(port: fallback, source: "Bonjour timeout; fallback")
+            return fallback
+        }
+        if let port = worker.resolvedPort {
+            record(port: port, source: "Bonjour: \(worker.resolvedServiceName ?? "unknown service")")
+            return port
+        }
+        let detail = worker.discoveryError ?? "no _remotepairing._tcp service resolved"
+        record(port: fallback, source: "Bonjour unavailable (\(detail)); fallback")
+        return fallback
+    }
+
+    private func search(timeout: TimeInterval) {
+        browser.delegate = self
+        browser.schedule(in: .current, forMode: .default)
+        browser.searchForServices(ofType: "_remotepairing._tcp.", inDomain: "local.")
+        let deadline = Date().addingTimeInterval(timeout)
+        while resolvedPort == nil && Date() < deadline {
+            _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.1))
+        }
+        browser.stop()
+        services.forEach { $0.stop() }
+    }
+
+    func netServiceBrowser(_ browser: NetServiceBrowser, didFind service: NetService, moreComing: Bool) {
+        services.append(service)
+        service.delegate = self
+        service.resolve(withTimeout: 4)
+    }
+
+    func netServiceBrowser(_ browser: NetServiceBrowser, didNotSearch errorDict: [String: NSNumber]) {
+        discoveryError = "browser error \(errorDict)"
+    }
+
+    func netService(_ sender: NetService, didNotResolve errorDict: [String: NSNumber]) {
+        discoveryError = "service \(sender.name): \(errorDict)"
+    }
+
+    func netServiceDidResolveAddress(_ sender: NetService) {
+        if (1...65535).contains(sender.port), resolvedPort == nil {
+            resolvedPort = UInt16(sender.port)
+            resolvedServiceName = sender.name
+        }
+    }
+}
+
 typealias LogFunc = (String?) -> Void
 typealias DebugAppCallback = (_ pid: Int32, _ debugProxy: OpaquePointer?, _ remoteServer: OpaquePointer?, _ semaphore: DispatchSemaphore) -> Void
 typealias SyslogLineHandler = (String) -> Void
@@ -169,7 +262,8 @@ final class JITEnableContext {
 
         var addr = sockaddr_in()
         addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = in_port_t(49152).bigEndian
+        let remotePairingPort = RemotePairingPortResolver.resolve()
+        addr.sin_port = in_port_t(remotePairingPort).bigEndian
 
         let deviceIP = DeviceConnectionContext.targetIPAddress
         let parseResult = deviceIP.withCString { inet_pton(AF_INET, $0, &addr.sin_addr) }
