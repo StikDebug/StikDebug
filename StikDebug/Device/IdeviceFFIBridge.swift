@@ -797,7 +797,7 @@ func simulate_location(_ deviceIP: String, _ latitude: Double, _ longitude: Doub
 
     var address = sockaddr_in()
     address.sin_family = sa_family_t(AF_INET)
-    address.sin_port = in_port_t(49152).bigEndian
+    address.sin_port = in_port_t(RemotePairingPortResolver.resolve()).bigEndian
 
     let inetResult = deviceIP.withCString { inet_pton(AF_INET, $0, &address.sin_addr) }
     guard inetResult == 1 else {

@@ -19,6 +19,7 @@ struct SettingsView: View {
     @AppStorage("keepAliveAudio") private var keepAliveAudio = true
     @AppStorage("keepAliveLocation") private var keepAliveLocation = true
     @AppStorage(UserDefaults.Keys.targetDeviceIP) private var targetDeviceIP = DeviceConnectionContext.defaultTargetIPAddress
+    @AppStorage("TunnelRemotePairingPort") private var remotePairingPortOverride = ""
     @AppStorage(UserDefaults.Keys.mallocDebug) private var mallocDebug = false
 
     @State private var isShowingPairingFilePicker = false
@@ -153,6 +154,18 @@ struct SettingsView: View {
                             .keyboardType(.numbersAndPunctuation)
                             .frame(maxWidth: 160)
                     }
+                    HStack {
+                        Text("Remote Pairing Port")
+                        Spacer()
+                        TextField("Auto (Bonjour)", text: $remotePairingPortOverride)
+                            .multilineTextAlignment(.trailing)
+                            .foregroundStyle(.secondary)
+                            .keyboardType(.numberPad)
+                            .frame(maxWidth: 160)
+                    }
+                    Text("Leave blank for automatic discovery. Use the port reported by SideStore Network Discovery if Bonjour fails. Restart the tunnel after changing this value.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     Button { openAppFolder() } label: {
                         Label("App Folder", systemImage: "folder")
                     }.foregroundStyle(.primary)
