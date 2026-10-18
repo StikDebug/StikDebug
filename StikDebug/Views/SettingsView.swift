@@ -19,6 +19,7 @@ struct SettingsView: View {
     @AppStorage("keepAliveAudio") private var keepAliveAudio = true
     @AppStorage("keepAliveLocation") private var keepAliveLocation = true
     @AppStorage(UserDefaults.Keys.targetDeviceIP) private var targetDeviceIP = DeviceConnectionContext.defaultTargetIPAddress
+    @AppStorage(UserDefaults.Keys.targetDevicePort) private var targetDevicePort = ""
     @AppStorage(UserDefaults.Keys.mallocDebug) private var mallocDebug = false
 
     @State private var isShowingPairingFilePicker = false
@@ -151,6 +152,15 @@ struct SettingsView: View {
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled(true)
                             .keyboardType(.numbersAndPunctuation)
+                            .frame(maxWidth: 160)
+                    }
+                    HStack {
+                        Text("RemotePair Port")
+                        Spacer()
+                        TextField("Auto (\(DeviceConnectionContext.defaultTargetPort))", text: $targetDevicePort)
+                            .multilineTextAlignment(.trailing)
+                            .foregroundStyle(.secondary)
+                            .keyboardType(.numberPad)
                             .frame(maxWidth: 160)
                     }
                     Button { openAppFolder() } label: {

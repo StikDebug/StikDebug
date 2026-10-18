@@ -20,7 +20,10 @@
 	<array>
 		<string>_stikdebug._tcp</string>
 		<string>_stikdebug._udp</string>
+		<string>_remotepairing._tcp</string>
 	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>StikDebug uses the local network to discover the RemotePairing service on this device.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>

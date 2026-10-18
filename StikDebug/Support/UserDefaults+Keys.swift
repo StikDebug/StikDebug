@@ -15,6 +15,8 @@ extension UserDefaults {
         static let defaultScriptName = "DefaultScriptName"
         static let defaultScriptNameValue = ""
         static let targetDeviceIP = "TunnelDeviceIP"
+        /// Optional RemotePairing port override; empty means auto-discovery.
+        static let targetDevicePort = "TunnelDevicePort"
         /// Attaches processes with MallocGuardEdges and MallocScribble.
         static let mallocDebug = "enableMallocDebug"
         static let mallocGuardEdges = "enableMallocGuardEdges"

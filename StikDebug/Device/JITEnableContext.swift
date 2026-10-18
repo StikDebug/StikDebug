@@ -168,9 +168,26 @@ final class JITEnableContext {
         let pairingFile = try getPairingFile()
         defer { rp_pairing_file_free(pairingFile) }
 
+        let port = DeviceConnectionContext.resolvedTargetPort()
+        do {
+            return try createTunnel(hostname: hostname, port: port, pairingFile: pairingFile)
+        } catch {
+            guard DeviceConnectionContext.configuredTargetPort == nil else { throw error }
+
+            // The RemotePairing port changes across reboots.
+            RemotePairingDiscovery.shared.invalidate()
+            guard let rediscovered = RemotePairingDiscovery.shared.resolvePortIfNeeded(),
+                  rediscovered != port else {
+                throw error
+            }
+            return try createTunnel(hostname: hostname, port: rediscovered, pairingFile: pairingFile)
+        }
+    }
+
+    private func createTunnel(hostname: String, port: UInt16, pairingFile: OpaquePointer) throws -> TunnelHandles {
         var addr = sockaddr_in()
         addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = DeviceConnectionContext.targetPort.bigEndian
+        addr.sin_port = port.bigEndian
 
         let deviceIP = DeviceConnectionContext.targetIPAddress
         let parseResult = deviceIP.withCString { inet_pton(AF_INET, $0, &addr.sin_addr) }
