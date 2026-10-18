@@ -9,6 +9,7 @@ import Foundation
 
 enum DeviceConnectionContext {
     static let defaultTargetIPAddress = "10.7.0.1"
+    static let targetPort: UInt16 = 49898
 
     static var targetIPAddress: String {
         let stored = UserDefaults.standard
