@@ -1557,6 +1557,7 @@ struct LocationSimulationView: View {
                     await MainActor.run {
                         routePlaybackTask = nil
                         routePlaybackCoordinate = lastSuccessfulCoordinate
+                        LocationSimulationSession.shared.clearRoute()
                         if let lastSuccessfulCoordinate {
                             startResendLoop(with: lastSuccessfulCoordinate)
                         }
@@ -1577,6 +1578,9 @@ struct LocationSimulationView: View {
             await MainActor.run {
                 guard LocationSimulationSession.shared.isCurrentRoute(routeID) else { return }
                 routePlaybackTask = nil
+                // The route has ended; while it stays set, isRouteRunning keeps
+                // map taps, search, bookmarks and Reset disabled.
+                LocationSimulationSession.shared.clearRoute()
                 if let lastSuccessfulCoordinate {
                     routePlaybackCoordinate = lastSuccessfulCoordinate
                     startResendLoop(with: lastSuccessfulCoordinate)
