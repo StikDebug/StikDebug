@@ -26,7 +26,12 @@ enum PairingFileStore {
         try? fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
 
         if let documentURL = documentSourceURL(fileManager: fileManager) {
-            if !fileManager.fileExists(atPath: destination.path) ||
+            let documentIsUsable = PairingFileSanitizer.repairIfNeeded(at: documentURL, fileManager: fileManager)
+            let destinationExists = fileManager.fileExists(atPath: destination.path)
+
+            // A damaged copy in Documents must never replace a working one.
+            if (documentIsUsable || !destinationExists),
+               !destinationExists ||
                 !fileManager.contentsEqual(atPath: documentURL.path, andPath: destination.path) {
                 do {
                     try replaceItem(at: destination, with: documentURL, fileManager: fileManager)
@@ -42,20 +47,26 @@ enum PairingFileStore {
         if !fileManager.fileExists(atPath: destination.path) {
             migrateLegacyCopy(fileManager: fileManager)
         } else {
+            if PairingFileSanitizer.repairIfNeeded(at: destination, fileManager: fileManager) {
+                protectPairingFile(at: destination, fileManager: fileManager)
+            }
             removeLegacyCopies(fileManager: fileManager)
         }
         return destination
     }
 
     static func replace(with sourceURL: URL, fileManager: FileManager = .default) throws {
+        // Store the property list itself rather than the picked file verbatim:
+        // stray bytes around it make the parser in idevice fail later on with
+        // an error nobody can act on.
+        try store(PairingFileSanitizer.sanitized(Data(contentsOf: sourceURL)), fileManager: fileManager)
+    }
+
+    /// Writes `data` over both copies of the pairing file.
+    static func store(_ data: Data, fileManager: FileManager = .default) throws {
         try fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
-
-        let documentsDestination = documentsURL
-        if sourceURL.standardizedFileURL != documentsDestination.standardizedFileURL {
-            try replaceItem(at: documentsDestination, with: sourceURL, fileManager: fileManager)
-        }
-
-        try replaceItem(at: url, with: documentsDestination, fileManager: fileManager)
+        try write(data, to: documentsURL, fileManager: fileManager)
+        try write(data, to: url, fileManager: fileManager)
         protectPairingFile(at: url, fileManager: fileManager)
         removeLegacyCopies(fileManager: fileManager)
     }
@@ -112,6 +123,14 @@ enum PairingFileStore {
             try? replace(with: legacyURL, fileManager: fileManager)
             break
         }
+    }
+
+    private static func write(_ data: Data, to destination: URL, fileManager: FileManager) throws {
+        try fileManager.createDirectory(
+            at: destination.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try data.write(to: destination, options: .atomic)
     }
 
     private static func replaceItem(at destination: URL, with source: URL, fileManager: FileManager) throws {

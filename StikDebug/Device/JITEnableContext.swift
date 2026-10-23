@@ -232,20 +232,55 @@ final class JITEnableContext {
             throw makeError("Pairing file not found!", code: -17)
         }
 
-        var pairingFile: OpaquePointer?
-        let ffiError = pairingFileURL.path.withCString { path in
-            rp_pairing_file_read(path, &pairingFile)
+        let payload: Data
+        do {
+            payload = try PairingFileSanitizer.sanitized(Data(contentsOf: pairingFileURL))
+        } catch {
+            throw makeError(
+                "Failed to read pairing file!: \(error.localizedDescription)",
+                code: PairingFileSanitizer.errorCode
+            )
+        }
+
+        var (pairingFile, ffiError) = readPairingFile(payload)
+
+        // Foundation accepts a handful of documents the parser in idevice turns
+        // down. Writing the record back out in canonical form clears those up,
+        // so the repaired copy is kept for the paths that read it by path.
+        if ffiError != nil,
+           let canonical = try? PairingFileSanitizer.canonicalized(payload),
+           canonical != payload {
+            idevice_error_free(ffiError)
+            (pairingFile, ffiError) = readPairingFile(canonical)
+
+            if ffiError == nil {
+                try? PairingFileStore.store(canonical)
+                LogManager.shared.addWarningLog("Rewrote the pairing file in canonical form to make it readable")
+            }
         }
 
         if let ffiError {
-            throw error(from: ffiError, fallback: "Failed to read pairing file!")
+            let detail = error(from: ffiError, fallback: "Failed to read pairing file!")
+            throw makeError(detail.localizedDescription, code: PairingFileSanitizer.errorCode)
         }
 
         guard let pairingFile else {
-            throw makeError("Failed to read pairing file!", code: -17)
+            throw makeError("Failed to read pairing file!", code: PairingFileSanitizer.errorCode)
         }
 
         return pairingFile
+    }
+
+    private func readPairingFile(_ data: Data) -> (OpaquePointer?, UnsafeMutablePointer<IdeviceFfiError>?) {
+        var handle: OpaquePointer?
+        let ffiError = data.withUnsafeBytes { rawBuffer in
+            rp_pairing_file_from_bytes(
+                rawBuffer.bindMemory(to: UInt8.self).baseAddress,
+                UInt(data.count),
+                &handle
+            )
+        }
+        return (handle, ffiError)
     }
 
     private func createTunnel(hostname: String) throws -> TunnelHandles {
