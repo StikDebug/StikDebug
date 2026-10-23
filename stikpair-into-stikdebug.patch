@@ -1,0 +1,1419 @@
+diff --git a/README.md b/README.md
+index 77a72a1..99ce7f8 100644
+--- a/README.md
++++ b/README.md
+@@ -57,6 +57,7 @@ StikDebug enables **JIT** for sideloaded apps on iOS 17.4+ without needing a com
+ ### Steps
+ 1. **Obtain a pairing file**  
+    - Detailed guide: [Pairing File Instructions](https://github.com/StikDebug/StikDebug-Guide/blob/main/pairing_file.md) (or ask in Discord).
++   - Or create one on-device (no computer): **Settings → Create Pairing File on Device** (based on [StikPair](https://github.com/StikDebug/StikPair)). The device being paired must run iOS 27+; on it, open **Settings → Privacy & Security → Developer Mode → Pair with StikDebug** and enter the code StikDebug shows. Apple TV pairing is also supported (export only).
+ 
+ 2. **Set up VPN**  
+    - Launch LocalDevVPN and enable the VPN.
+diff --git a/StikDebug/App/AppBootstrapper.swift b/StikDebug/App/AppBootstrapper.swift
+index bf7985a..f9c86a0 100644
+--- a/StikDebug/App/AppBootstrapper.swift
++++ b/StikDebug/App/AppBootstrapper.swift
+@@ -13,6 +13,7 @@ enum AppBootstrapper {
+         registerDefaultSettings()
+         ensureKeepAliveSelection()
+         applyDocumentPickerCopyWorkaround()
++        PairingController.registerBackgroundTask()
+     }
+ 
+     private static func registerDefaultSettings() {
+diff --git a/StikDebug/Features/Pairing/AppleTVDiscovery.swift b/StikDebug/Features/Pairing/AppleTVDiscovery.swift
+new file mode 100644
+index 0000000..f26da9b
+--- /dev/null
++++ b/StikDebug/Features/Pairing/AppleTVDiscovery.swift
+@@ -0,0 +1,118 @@
++//
++//  AppleTVDiscovery.swift
++//  StikDebug
++//
++//  Ported from StikPair (StephenDev0/StikPair).
++//
++
++import Foundation
++
++struct AppleTVDevice: Identifiable, Equatable {
++    let id: String
++    let name: String
++    let host: String
++    let port: Int
++    /// Raw `sockaddr` blobs resolved by Bonjour, IPv4 first.
++    let addresses: [Data]
++}
++
++/// Browses for Apple TVs that are showing the "Remote App and Devices" pairing screen.
++@MainActor
++final class AppleTVDiscovery: NSObject, ObservableObject {
++    @Published private(set) var devices: [AppleTVDevice] = []
++
++    private let browser = NetServiceBrowser()
++    private var services: [String: NetService] = [:]
++
++    override init() {
++        super.init()
++        browser.delegate = self
++    }
++
++    func start() {
++        guard services.isEmpty else { return }
++        browser.searchForServices(
++            ofType: "_remotepairing-manual-pairing._tcp.",
++            inDomain: "local.")
++    }
++
++    func stop() {
++        browser.stop()
++        for service in services.values {
++            service.stop()
++        }
++        services.removeAll()
++        devices.removeAll()
++    }
++
++    private func identifier(for service: NetService) -> String {
++        "\(service.name).\(service.type)\(service.domain)"
++    }
++
++    private static func sortedAddresses(_ addresses: [Data]) -> [Data] {
++        func family(_ data: Data) -> Int32 {
++            guard data.count >= MemoryLayout<sockaddr>.size else { return -1 }
++            return data.withUnsafeBytes { raw in
++                Int32(raw.bindMemory(to: sockaddr.self).baseAddress!.pointee.sa_family)
++            }
++        }
++        let v4 = addresses.filter { family($0) == AF_INET }
++        let v6 = addresses.filter { family($0) == AF_INET6 }
++        return v4 + v6
++    }
++
++    private func update(_ service: NetService) {
++        let addresses = Self.sortedAddresses(service.addresses ?? [])
++        guard !addresses.isEmpty, service.port > 0 else { return }
++        let id = identifier(for: service)
++        let txt = service.txtRecordData().map(NetService.dictionary(fromTXTRecord:)) ?? [:]
++        let advertisedName = txt["name"].flatMap { String(data: $0, encoding: .utf8) }
++        let displayName = advertisedName.flatMap { $0.isEmpty ? nil : $0 } ?? service.name
++        let device = AppleTVDevice(
++            id: id,
++            name: displayName,
++            host: service.hostName ?? service.name,
++            port: service.port,
++            addresses: addresses)
++        devices.removeAll { $0.id == id }
++        devices.append(device)
++        devices.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
++    }
++}
++
++extension AppleTVDiscovery: NetServiceBrowserDelegate {
++    nonisolated func netServiceBrowser(
++        _ browser: NetServiceBrowser,
++        didFind service: NetService,
++        moreComing: Bool
++    ) {
++        Task { @MainActor in
++            let id = identifier(for: service)
++            services[id] = service
++            service.delegate = self
++            service.resolve(withTimeout: 6)
++        }
++    }
++
++    nonisolated func netServiceBrowser(
++        _ browser: NetServiceBrowser,
++        didRemove service: NetService,
++        moreComing: Bool
++    ) {
++        Task { @MainActor in
++            let id = identifier(for: service)
++            services.removeValue(forKey: id)
++            devices.removeAll { $0.id == id }
++        }
++    }
++}
++
++extension AppleTVDiscovery: NetServiceDelegate {
++    nonisolated func netServiceDidResolveAddress(_ sender: NetService) {
++        Task { @MainActor in update(sender) }
++    }
++
++    nonisolated func netService(_ sender: NetService, didUpdateTXTRecord data: Data) {
++        Task { @MainActor in update(sender) }
++    }
++}
+diff --git a/StikDebug/Features/Pairing/LocalNetworkAuthorization.swift b/StikDebug/Features/Pairing/LocalNetworkAuthorization.swift
+new file mode 100644
+index 0000000..f3af927
+--- /dev/null
++++ b/StikDebug/Features/Pairing/LocalNetworkAuthorization.swift
+@@ -0,0 +1,67 @@
++//
++//  LocalNetworkAuthorization.swift
++//  StikDebug
++//
++//  Ported from StikPair (StephenDev0/StikPair).
++//
++
++import Foundation
++import Network
++
++/// Triggers (and waits for the result of) the iOS Local Network permission prompt
++/// by advertising and browsing a throwaway Bonjour service.
++@MainActor
++final class LocalNetworkAuthorization {
++    private var browser: NWBrowser?
++    private var listener: NWListener?
++    private var continuation: CheckedContinuation<Bool, Never>?
++
++    private let probeType = "_stikpairprobe._tcp"
++
++    func request(timeout: TimeInterval = 60) async -> Bool {
++        await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
++            self.continuation = cont
++
++            let params = NWParameters.tcp
++            params.includePeerToPeer = true
++
++            let listener = try? NWListener(using: params)
++            listener?.service = NWListener.Service(name: "StikDebugPairingProbe", type: probeType)
++            listener?.newConnectionHandler = { $0.cancel() }
++            listener?.stateUpdateHandler = { [weak self] state in
++                if case .failed = state {
++                    MainActor.assumeIsolated { self?.finish(false) }
++                }
++            }
++            self.listener = listener
++
++            let browser = NWBrowser(for: .bonjour(type: probeType, domain: nil), using: params)
++            browser.stateUpdateHandler = { [weak self] state in
++                if case .failed = state {
++                    MainActor.assumeIsolated { self?.finish(false) }
++                }
++            }
++            browser.browseResultsChangedHandler = { [weak self] results, _ in
++                if !results.isEmpty {
++                    MainActor.assumeIsolated { self?.finish(true) }
++                }
++            }
++            self.browser = browser
++
++            listener?.start(queue: .main)
++            browser.start(queue: .main)
++
++            DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
++                MainActor.assumeIsolated { self?.finish(false) }
++            }
++        }
++    }
++
++    private func finish(_ authorized: Bool) {
++        guard let cont = continuation else { return }
++        continuation = nil
++        cont.resume(returning: authorized)
++        browser?.cancel(); browser = nil
++        listener?.cancel(); listener = nil
++    }
++}
+diff --git a/StikDebug/Features/Pairing/PairingController.swift b/StikDebug/Features/Pairing/PairingController.swift
+new file mode 100644
+index 0000000..0ae68ec
+--- /dev/null
++++ b/StikDebug/Features/Pairing/PairingController.swift
+@@ -0,0 +1,488 @@
++//
++//  PairingController.swift
++//  StikDebug
++//
++//  On-device pairing file creation, ported from StikPair (StephenDev0/StikPair).
++//
++
++import BackgroundTasks
++import Combine
++import Foundation
++import UserNotifications
++
++@MainActor
++final class PairingController: ObservableObject {
++
++    static let shared = PairingController()
++
++    /// Name shown on the device being paired (Settings › Privacy & Security › Developer Mode).
++    static let hostName = "StikDebug"
++
++    /// Must match an entry in `BGTaskSchedulerPermittedIdentifiers` (Info.plist).
++    nonisolated static var taskIdentifier: String {
++        (Bundle.main.bundleIdentifier ?? "com.stik.stikdebug") + ".pairing"
++    }
++
++    struct PairedDevice: Equatable {
++        var name: String
++        var model: String
++        var udid: String
++        var fileURL: URL
++        /// True when the file pairs *a device running StikDebug* (iPhone/iPad), so it can be
++        /// installed as StikDebug's pairing file. Apple TV files are export-only.
++        var canInstall: Bool
++    }
++
++    enum Phase: Equatable {
++        case idle
++        case waiting
++        case showPin(String)
++        case browsingAppleTV
++        case enteringAppleTVPin(AppleTVDevice)
++        case pairingAppleTV(String)
++        case success(PairedDevice)
++        case failed(String)
++    }
++
++    @Published private(set) var phase: Phase = .idle
++    @Published private(set) var appleTVs: [AppleTVDevice] = []
++    @Published private(set) var didInstallPairingFile = false
++
++    private let localNetwork = LocalNetworkAuthorization()
++    private let appleTVDiscovery = AppleTVDiscovery()
++    private var discoverySubscription: AnyCancellable?
++
++    private var netService: NetService?
++    private var hostSocket: PairingListenerSocket?
++    private var appleTVGate: PinGate?
++    private var activeAppleTV: AppleTVDevice?
++
++    /// Bumped whenever a session starts or is cancelled, so results from a
++    /// superseded session are ignored.
++    private var generation = 0
++    private var hostRunning = false
++    private var keepAliveHeld = false
++    private var bgTaskBox: AnyObject?
++    private var bgTaskFinished = false
++    private var outputURL: URL?
++
++    var isRunning: Bool {
++        switch phase {
++        case .waiting, .showPin, .enteringAppleTVPin, .pairingAppleTV: return true
++        default: return false
++        }
++    }
++
++    private init() {
++        discoverySubscription = appleTVDiscovery.$devices
++            .sink { [weak self] devices in self?.appleTVs = devices }
++    }
++
++    // MARK: Background task registration
++
++    /// Call once at launch, before the app finishes launching.
++    nonisolated static func registerBackgroundTask() {
++        #if compiler(>=6.2)
++        guard #available(iOS 26.0, *) else { return }
++        BGTaskScheduler.shared.register(
++            forTaskWithIdentifier: taskIdentifier,
++            using: DispatchQueue.main
++        ) { task in
++            guard let task = task as? BGContinuedProcessingTask else { return }
++            MainActor.assumeIsolated {
++                PairingController.shared.backgroundTaskDidStart(task)
++            }
++        }
++        #endif
++    }
++
++    // MARK: iPhone / iPad
++
++    func start() {
++        guard !isRunning else { return }
++        appleTVDiscovery.stop()
++        generation += 1
++        let gen = generation
++        didInstallPairingFile = false
++        phase = .waiting
++
++        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
++        acquireKeepAlive()
++
++        Task { [weak self] in
++            guard let self else { return }
++            let authorized = await self.localNetwork.request()
++            guard gen == self.generation, case .waiting = self.phase else { return }
++            guard authorized else {
++                self.releaseKeepAlive()
++                self.phase = .failed("Local Network permission is required. Enable it in Settings › StikDebug › Local Network, then try again.")
++                return
++            }
++            self.submitBackgroundTask(generation: gen)
++        }
++    }
++
++    private func submitBackgroundTask(generation gen: Int) {
++        #if compiler(>=6.2)
++        if #available(iOS 26.0, *) {
++            let request = BGContinuedProcessingTaskRequest(
++                identifier: Self.taskIdentifier,
++                title: "StikDebug",
++                subtitle: "Waiting for a device to connect…")
++            request.strategy = .queue
++            do {
++                try BGTaskScheduler.shared.submit(request)
++                // If the system doesn't start the task, run without it.
++                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
++                    guard let self, gen == self.generation, !self.hostRunning else { return }
++                    self.runHost(generation: gen)
++                }
++                return
++            } catch {
++                // Fall through and run without the continued-processing task.
++            }
++        }
++        #endif
++        runHost(generation: gen)
++    }
++
++    #if compiler(>=6.2)
++    @available(iOS 26.0, *)
++    fileprivate func backgroundTaskDidStart(_ task: BGContinuedProcessingTask) {
++        guard !hostRunning, case .waiting = phase else {
++            task.setTaskCompleted(success: false)
++            return
++        }
++        task.progress.totalUnitCount = 100
++        task.progress.completedUnitCount = 5
++        task.expirationHandler = { [weak self] in
++            DispatchQueue.main.async {
++                guard let self else { return }
++                if self.hostRunning, self.isRunning {
++                    self.cancelHostPairing(
++                        failure: "Background time expired before a device connected. Tap Pair to try again.")
++                } else {
++                    self.finishBackgroundTask(success: false)
++                }
++            }
++        }
++        bgTaskBox = task
++        bgTaskFinished = false
++        runHost(generation: generation)
++    }
++    #endif
++
++    private func runHost(generation gen: Int) {
++        guard !hostRunning, gen == generation, case .waiting = phase else { return }
++        hostRunning = true
++
++        let socket = PairingListenerSocket()
++        hostSocket = socket
++        let name = Self.hostName
++        let url = Self.makeOutputURL()
++        outputURL = url
++
++        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
++            let result = HostPairing.run(
++                socket: socket,
++                name: name,
++                outputURL: url,
++                onReady: { serviceID, port, txt in
++                    DispatchQueue.main.async {
++                        guard let self, gen == self.generation else { return }
++                        self.startAdvertising(serviceID: serviceID, port: port, txt: txt)
++                    }
++                },
++                onPin: { pin in
++                    DispatchQueue.main.async {
++                        guard let self, gen == self.generation else { return }
++                        self.presentPin(pin)
++                    }
++                })
++            DispatchQueue.main.async {
++                self?.finishHost(result, outputURL: url, generation: gen)
++            }
++        }
++    }
++
++    private func finishHost(_ result: Result<PairingOutcome, PairingFailure>, outputURL url: URL, generation gen: Int) {
++        guard gen == generation else {
++            // Superseded or cancelled: its owner already cleaned up the UI state.
++            try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
++            return
++        }
++        hostRunning = false
++        hostSocket = nil
++        stopAdvertising()
++        releaseKeepAlive()
++
++        switch result {
++        case .success(let outcome):
++            phase = .success(PairedDevice(
++                name: outcome.name,
++                model: outcome.model,
++                udid: outcome.udid,
++                fileURL: url,
++                canInstall: true))
++            updateBackgroundTask(progress: 100)
++            postReturnNotification()
++            finishBackgroundTask(success: true)
++        case .failure(let failure):
++            try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
++            phase = failure.isCancelled ? .idle : .failed(failure.message)
++            finishBackgroundTask(success: false)
++        }
++    }
++
++    private func presentPin(_ pin: String) {
++        phase = .showPin(pin)
++        updateBackgroundTask(progress: 50, subtitle: "Enter code \(pin) on this device")
++        notify(id: "stikdebug.pairing.pin",
++               title: "StikDebug pairing code",
++               body: "Enter \(pin) on this device to pair.")
++    }
++
++    private func cancelHostPairing(failure message: String?) {
++        generation += 1
++        hostSocket?.cancel()
++        hostSocket = nil
++        hostRunning = false
++        stopAdvertising()
++        releaseKeepAlive()
++        finishBackgroundTask(success: false)
++        if let url = outputURL {
++            try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
++            outputURL = nil
++        }
++        if let message {
++            phase = .failed(message)
++        } else {
++            phase = .idle
++        }
++    }
++
++    func cancelHostPairing() {
++        guard hostRunning || phase == .waiting || isShowingPin else { return }
++        cancelHostPairing(failure: nil)
++    }
++
++    private var isShowingPin: Bool {
++        if case .showPin = phase { return true }
++        return false
++    }
++
++    // MARK: Apple TV
++
++    func browseForAppleTVs() {
++        guard !isRunning else { return }
++        generation += 1
++        let gen = generation
++        didInstallPairingFile = false
++        phase = .browsingAppleTV
++        Task { [weak self] in
++            guard let self else { return }
++            let authorized = await self.localNetwork.request()
++            guard gen == self.generation, case .browsingAppleTV = self.phase else { return }
++            guard authorized else {
++                self.phase = .failed("Local Network permission is required. Enable it in Settings › StikDebug › Local Network, then try again.")
++                return
++            }
++            self.appleTVDiscovery.start()
++        }
++    }
++
++    func pairAppleTV(_ device: AppleTVDevice) {
++        guard case .browsingAppleTV = phase else { return }
++        appleTVDiscovery.stop()
++        generation += 1
++        let gen = generation
++
++        let gate = PinGate()
++        appleTVGate = gate
++        activeAppleTV = device
++        phase = .pairingAppleTV(device.name)
++
++        let name = Self.hostName
++        let url = Self.makeOutputURL()
++        outputURL = url
++
++        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
++            let result = AppleTVPairing.run(
++                device: device,
++                hostName: name,
++                outputURL: url,
++                gate: gate,
++                onNeedPin: {
++                    DispatchQueue.main.async {
++                        guard let self, gen == self.generation, let device = self.activeAppleTV else { return }
++                        self.phase = .enteringAppleTVPin(device)
++                    }
++                })
++            DispatchQueue.main.async {
++                self?.finishAppleTV(result, outputURL: url, generation: gen)
++            }
++        }
++    }
++
++    private func finishAppleTV(_ result: Result<PairingOutcome, PairingFailure>, outputURL url: URL, generation gen: Int) {
++        guard gen == generation else {
++            try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
++            return
++        }
++        appleTVGate = nil
++        activeAppleTV = nil
++
++        switch result {
++        case .success(let outcome):
++            phase = .success(PairedDevice(
++                name: outcome.name,
++                model: outcome.model,
++                udid: outcome.udid,
++                fileURL: url,
++                canInstall: false))
++            postReturnNotification()
++        case .failure(let failure):
++            try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
++            phase = failure.isCancelled ? .idle : .failed(failure.message)
++        }
++    }
++
++    func submitAppleTVPin(_ pin: String) {
++        guard pin.count == 6, pin.allSatisfy(\.isNumber),
++              case .enteringAppleTVPin(let device) = phase,
++              let gate = appleTVGate else { return }
++        if gate.submit(pin) {
++            phase = .pairingAppleTV(device.name)
++        }
++    }
++
++    func cancelAppleTVPairing() {
++        generation += 1
++        appleTVGate?.cancel()
++        appleTVGate = nil
++        activeAppleTV = nil
++        appleTVDiscovery.stop()
++        if let url = outputURL {
++            try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
++            outputURL = nil
++        }
++        phase = .idle
++    }
++
++    // MARK: Shared actions
++
++    /// Cancels whatever is in progress (used when the screen is dismissed).
++    func cancelIfRunning() {
++        switch phase {
++        case .waiting, .showPin:
++            cancelHostPairing(failure: nil)
++        case .browsingAppleTV, .enteringAppleTVPin, .pairingAppleTV:
++            cancelAppleTVPairing()
++        default:
++            break
++        }
++    }
++
++    /// Installs the freshly created pairing file as StikDebug's own pairing file.
++    func installPairingFile() throws {
++        guard case .success(let device) = phase, device.canInstall else { return }
++        try PairingFileStore.replace(with: device.fileURL)
++        markTunnelDisconnected()
++        startTunnelInBackground()
++        NotificationCenter.default.post(name: .pairingFileImported, object: nil)
++        AlertPresenter.dismissPresentedAlert()
++        didInstallPairingFile = true
++    }
++
++    func reset() {
++        guard !isRunning else { return }
++        appleTVDiscovery.stop()
++        if let url = outputURL {
++            try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
++            outputURL = nil
++        }
++        didInstallPairingFile = false
++        phase = .idle
++    }
++
++    // MARK: Keep-alive (reuses StikDebug's existing silent-audio / location managers)
++
++    private func acquireKeepAlive() {
++        guard !keepAliveHeld else { return }
++        keepAliveHeld = true
++        BackgroundAudioManager.shared.requestStart()
++        BackgroundLocationManager.shared.requestStart()
++    }
++
++    private func releaseKeepAlive() {
++        guard keepAliveHeld else { return }
++        keepAliveHeld = false
++        BackgroundAudioManager.shared.requestStop()
++        BackgroundLocationManager.shared.requestStop()
++    }
++
++    // MARK: Continued-processing task helpers
++
++    private func updateBackgroundTask(progress: Int64? = nil, subtitle: String? = nil) {
++        #if compiler(>=6.2)
++        if #available(iOS 26.0, *), let task = bgTaskBox as? BGContinuedProcessingTask {
++            if let progress { task.progress.completedUnitCount = progress }
++            if let subtitle { task.updateTitle("StikDebug", subtitle: subtitle) }
++        }
++        #endif
++    }
++
++    private func finishBackgroundTask(success: Bool) {
++        #if compiler(>=6.2)
++        if #available(iOS 26.0, *), let task = bgTaskBox as? BGContinuedProcessingTask, !bgTaskFinished {
++            bgTaskFinished = true
++            task.setTaskCompleted(success: success)
++        }
++        #endif
++        bgTaskBox = nil
++    }
++
++    // MARK: Bonjour advertising (iPhone / iPad pairing)
++
++    private func startAdvertising(serviceID: String, port: UInt16, txt: [String: Data]) {
++        stopAdvertising()
++        let service = NetService(
++            domain: "",
++            type: "_remotepairing-pairable-host._tcp.",
++            name: serviceID,
++            port: Int32(port))
++        service.setTXTRecord(NetService.data(fromTXTRecord: txt))
++        service.publish()
++        netService = service
++    }
++
++    private func stopAdvertising() {
++        netService?.stop()
++        netService = nil
++    }
++
++    // MARK: Notifications / files
++
++    private func postReturnNotification() {
++        notify(id: "stikdebug.pairing.done",
++               title: "Pairing complete",
++               body: "Return to StikDebug to finish setting up the pairing file.")
++    }
++
++    private func notify(id: String, title: String, body: String) {
++        let content = UNMutableNotificationContent()
++        content.title = title
++        content.body = body
++        content.sound = .default
++        let request = UNNotificationRequest(identifier: id, content: content, trigger: nil)
++        UNUserNotificationCenter.current().add(request)
++    }
++
++    /// `<tmp>/<uuid>/pairingFile.plist` — the unique folder is removed when the session ends.
++    private static func makeOutputURL() -> URL {
++        let directory = FileManager.default.temporaryDirectory
++            .appendingPathComponent("StikDebugPairing-\(UUID().uuidString)", isDirectory: true)
++        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
++        return directory.appendingPathComponent(PairingFileStore.fileName)
++    }
++}
+diff --git a/StikDebug/Features/Pairing/PairingEngine.swift b/StikDebug/Features/Pairing/PairingEngine.swift
+new file mode 100644
+index 0000000..5ce7635
+--- /dev/null
++++ b/StikDebug/Features/Pairing/PairingEngine.swift
+@@ -0,0 +1,421 @@
++//
++//  PairingEngine.swift
++//  StikDebug
++//
++//  Swift port of StikPair's Rust FFI shim. It drives the idevice remote-pairing
++//  functions that StikDebug already links (libidevice_ffi.a), so no extra Rust
++//  library is needed. Bonjour advertising is done by the caller via NetService.
++//
++
++import Foundation
++import idevice
++
++struct PairingFailure: Error {
++    let message: String
++    var isCancelled = false
++
++    static let cancelled = PairingFailure(message: "Pairing cancelled.", isCancelled: true)
++}
++
++struct PairingOutcome {
++    let name: String
++    let model: String
++    let udid: String
++}
++
++private func ffiMessage(_ error: UnsafeMutablePointer<IdeviceFfiError>?, fallback: String) -> String {
++    guard let error else { return fallback }
++    defer { idevice_error_free(error) }
++    if let raw = error.pointee.message, let text = String(validatingUTF8: raw), !text.isEmpty {
++        return "\(fallback): \(text)"
++    }
++    return fallback
++}
++
++private func swiftString(_ pointer: UnsafeMutablePointer<CChar>?) -> String {
++    guard let pointer else { return "" }
++    return String(cString: pointer)
++}
++
++private func errnoText() -> String {
++    String(cString: strerror(errno))
++}
++
++// MARK: - Listening socket (iPhone / iPad pairing)
++
++/// A one-shot IPv4 TCP listener. The accept loop polls so it can be cancelled
++/// safely from another thread without closing a descriptor that is in use.
++final class PairingListenerSocket {
++    private let lock = NSLock()
++    private var listenFD: Int32 = -1
++    private var acceptedFD: Int32 = -1
++    private var cancelled = false
++
++    var isCancelled: Bool {
++        lock.lock(); defer { lock.unlock() }
++        return cancelled
++    }
++
++    func bindAndListen() throws -> UInt16 {
++        let fd = socket(AF_INET, SOCK_STREAM, 0)
++        guard fd >= 0 else {
++            throw PairingFailure(message: "Failed to create socket: \(errnoText())")
++        }
++
++        var reuse: Int32 = 1
++        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
++
++        var address = sockaddr_in()
++        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
++        address.sin_family = sa_family_t(AF_INET)
++        address.sin_port = 0
++        address.sin_addr = in_addr(s_addr: 0)
++
++        let bindResult = withUnsafePointer(to: &address) { pointer -> Int32 in
++            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
++                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
++            }
++        }
++        guard bindResult == 0 else {
++            let text = errnoText()
++            close(fd)
++            throw PairingFailure(message: "Failed to bind pairing port: \(text)")
++        }
++
++        guard listen(fd, 1) == 0 else {
++            let text = errnoText()
++            close(fd)
++            throw PairingFailure(message: "Failed to listen for pairing: \(text)")
++        }
++
++        var bound = sockaddr_in()
++        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
++        let nameResult = withUnsafeMutablePointer(to: &bound) { pointer -> Int32 in
++            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
++                getsockname(fd, $0, &length)
++            }
++        }
++        guard nameResult == 0 else {
++            let text = errnoText()
++            close(fd)
++            throw PairingFailure(message: "Failed to read pairing port: \(text)")
++        }
++
++        lock.lock()
++        if cancelled {
++            lock.unlock()
++            close(fd)
++            throw PairingFailure.cancelled
++        }
++        listenFD = fd
++        lock.unlock()
++
++        return UInt16(bigEndian: bound.sin_port)
++    }
++
++    /// Blocks until a device connects. Returns nil when cancelled or on a fatal error.
++    func acceptConnection() -> Int32? {
++        while true {
++            lock.lock()
++            let fd = listenFD
++            let stop = cancelled
++            lock.unlock()
++            if stop || fd < 0 { return nil }
++
++            var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
++            let ready = poll(&descriptor, 1, 500)
++            if ready < 0 {
++                if errno == EINTR { continue }
++                return nil
++            }
++            if ready == 0 { continue }
++
++            let client = Darwin.accept(fd, nil, nil)
++            if client >= 0 {
++                var noSigPipe: Int32 = 1
++                setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
++
++                lock.lock()
++                if cancelled {
++                    lock.unlock()
++                    close(client)
++                    return nil
++                }
++                acceptedFD = client
++                lock.unlock()
++                return client
++            }
++            if errno == EINTR || errno == EAGAIN || errno == ECONNABORTED { continue }
++            return nil
++        }
++    }
++
++    /// Stops listening (the service has been matched to a device, or we are done).
++    func closeListener() {
++        lock.lock()
++        let fd = listenFD
++        listenFD = -1
++        lock.unlock()
++        if fd >= 0 { close(fd) }
++    }
++
++    /// Aborts a wait or an in-flight pairing from any thread.
++    func cancel() {
++        lock.lock()
++        cancelled = true
++        let accepted = acceptedFD
++        lock.unlock()
++        if accepted >= 0 {
++            shutdown(accepted, SHUT_RDWR)
++        }
++    }
++
++    func closeAll() {
++        closeListener()
++        lock.lock()
++        let accepted = acceptedFD
++        acceptedFD = -1
++        lock.unlock()
++        if accepted >= 0 { close(accepted) }
++    }
++}
++
++private final class PinBox {
++    let handler: (String) -> Void
++    init(_ handler: @escaping (String) -> Void) { self.handler = handler }
++}
++
++private let hostPinCallback: PairableHostPinCb = { pin, context in
++    guard let pin, let context else { return }
++    Unmanaged<PinBox>.fromOpaque(context).takeUnretainedValue().handler(String(cString: pin))
++}
++
++// MARK: - iPhone / iPad (this app acts as the pairable host)
++
++enum HostPairing {
++    /// Blocking. Call from a background queue.
++    static func run(
++        socket: PairingListenerSocket,
++        name: String,
++        outputURL: URL,
++        onReady: @escaping (_ serviceID: String, _ port: UInt16, _ txt: [String: Data]) -> Void,
++        onPin: @escaping (String) -> Void
++    ) -> Result<PairingOutcome, PairingFailure> {
++        defer { socket.closeAll() }
++
++        var handleOut: OpaquePointer?
++        var serviceIDOut: UnsafeMutablePointer<CChar>?
++        var txtOut: UnsafeMutablePointer<UInt8>?
++        var txtLength: UInt = 0
++
++        let prepareError = name.withCString { namePointer in
++            pairable_host_prepare(namePointer, nil, false, &handleOut, &serviceIDOut, &txtOut, &txtLength, nil)
++        }
++        guard prepareError == nil, let handle = handleOut, let serviceIDPointer = serviceIDOut, let txtPointer = txtOut else {
++            if let serviceIDOut { idevice_string_free(serviceIDOut) }
++            if let txtOut { idevice_data_free(txtOut, txtLength) }
++            if let handleOut { pairable_host_free(handleOut) }
++            return .failure(PairingFailure(message: ffiMessage(prepareError, fallback: "Failed to prepare pairing")))
++        }
++        defer { pairable_host_free(handle) }
++
++        let serviceID = String(cString: serviceIDPointer)
++        idevice_string_free(serviceIDPointer)
++        let txtData = Data(bytes: txtPointer, count: Int(txtLength))
++        idevice_data_free(txtPointer, txtLength)
++
++        var txt: [String: Data] = [:]
++        if let dictionary = (try? PropertyListSerialization.propertyList(from: txtData, options: [], format: nil)) as? [String: Any] {
++            for (key, value) in dictionary {
++                if let string = value as? String {
++                    txt[key] = Data(string.utf8)
++                } else if let data = value as? Data {
++                    txt[key] = data
++                }
++            }
++        }
++
++        let port: UInt16
++        do {
++            port = try socket.bindAndListen()
++        } catch let failure as PairingFailure {
++            return .failure(failure)
++        } catch {
++            return .failure(PairingFailure(message: error.localizedDescription))
++        }
++
++        onReady(serviceID, port, txt)
++
++        guard let connection = socket.acceptConnection() else {
++            return .failure(socket.isCancelled
++                ? .cancelled
++                : PairingFailure(message: "Failed while waiting for a device to connect."))
++        }
++        socket.closeListener()
++
++        var peer: UnsafeMutablePointer<RpPairingPeerDeviceC>?
++        var pairingFileOut: OpaquePointer?
++        let box = PinBox(onPin)
++        let context = Unmanaged.passUnretained(box).toOpaque()
++
++        let acceptError = withExtendedLifetime(box) {
++            pairable_host_accept_fd(handle, connection, hostPinCallback, context, &peer, &pairingFileOut)
++        }
++
++        guard acceptError == nil, let pairingFile = pairingFileOut else {
++            if let pairingFileOut { rp_pairing_file_free(pairingFileOut) }
++            if let peer { rppairing_peer_device_free(peer) }
++            if socket.isCancelled { return .failure(.cancelled) }
++            return .failure(PairingFailure(message: ffiMessage(acceptError, fallback: "Pairing failed")))
++        }
++        defer { rp_pairing_file_free(pairingFile) }
++
++        let writeError = outputURL.path.withCString { rp_pairing_file_write(pairingFile, $0) }
++        guard writeError == nil else {
++            if let peer { rppairing_peer_device_free(peer) }
++            return .failure(PairingFailure(message: ffiMessage(writeError, fallback: "Failed to write pairing file")))
++        }
++
++        var outcome = PairingOutcome(name: "", model: "", udid: "")
++        if let peer {
++            outcome = PairingOutcome(
++                name: swiftString(peer.pointee.name),
++                model: swiftString(peer.pointee.model),
++                udid: swiftString(peer.pointee.udid))
++            rppairing_peer_device_free(peer)
++        }
++        return .success(outcome)
++    }
++}
++
++// MARK: - Apple TV (this app acts as the client)
++
++/// Hands the PIN typed by the user to the blocking FFI pin callback.
++final class PinGate {
++    private let semaphore = DispatchSemaphore(value: 0)
++    private let lock = NSLock()
++    private var pin: String?
++    private var cancelled = false
++
++    @discardableResult
++    func submit(_ value: String) -> Bool {
++        lock.lock()
++        guard !cancelled, pin == nil else {
++            lock.unlock()
++            return false
++        }
++        pin = value
++        lock.unlock()
++        semaphore.signal()
++        return true
++    }
++
++    func cancel() {
++        lock.lock()
++        cancelled = true
++        lock.unlock()
++        semaphore.signal()
++    }
++
++    var isCancelled: Bool {
++        lock.lock(); defer { lock.unlock() }
++        return cancelled
++    }
++
++    fileprivate func waitForPin() -> String {
++        semaphore.wait()
++        lock.lock(); defer { lock.unlock() }
++        return cancelled ? "" : (pin ?? "")
++    }
++}
++
++private final class AppleTVPinBox {
++    let gate: PinGate
++    let onNeedPin: () -> Void
++    /// The library only reads the returned string, so we own (and free) it.
++    var buffer: UnsafeMutablePointer<CChar>?
++
++    init(gate: PinGate, onNeedPin: @escaping () -> Void) {
++        self.gate = gate
++        self.onNeedPin = onNeedPin
++    }
++
++    deinit {
++        if let buffer { free(buffer) }
++    }
++}
++
++enum AppleTVPairing {
++    /// Blocking. Call from a background queue.
++    static func run(
++        device: AppleTVDevice,
++        hostName: String,
++        outputURL: URL,
++        gate: PinGate,
++        onNeedPin: @escaping () -> Void
++    ) -> Result<PairingOutcome, PairingFailure> {
++        guard let address = device.addresses.first else {
++            return .failure(PairingFailure(message: "Could not resolve the Apple TV's address."))
++        }
++
++        var pairingFileOut: OpaquePointer?
++        let generateError = hostName.withCString { rp_pairing_file_generate($0, &pairingFileOut) }
++        guard generateError == nil, let pairingFile = pairingFileOut else {
++            if let pairingFileOut { rp_pairing_file_free(pairingFileOut) }
++            return .failure(PairingFailure(message: ffiMessage(generateError, fallback: "Failed to create pairing identity")))
++        }
++        defer { rp_pairing_file_free(pairingFile) }
++
++        var peer: UnsafeMutablePointer<RpPairingPeerDeviceC>?
++        let box = AppleTVPinBox(gate: gate, onNeedPin: onNeedPin)
++        let context = Unmanaged.passUnretained(box).toOpaque()
++
++        let pairError: UnsafeMutablePointer<IdeviceFfiError>? = withExtendedLifetime(box) {
++            address.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> UnsafeMutablePointer<IdeviceFfiError>? in
++                guard let base = raw.baseAddress else { return nil }
++                let socketAddress = base.assumingMemoryBound(to: sockaddr.self)
++                return hostName.withCString { hostPointer in
++                    rppairing_pair_network(
++                        socketAddress,
++                        idevice_socklen_t(raw.count),
++                        hostPointer,
++                        pairingFile,
++                        { context in
++                            guard let context else { return nil }
++                            let pinBox = Unmanaged<AppleTVPinBox>.fromOpaque(context).takeUnretainedValue()
++                            pinBox.onNeedPin()
++                            let pin = pinBox.gate.waitForPin()
++                            if let previous = pinBox.buffer { free(previous) }
++                            pinBox.buffer = strdup(pin)
++                            return UnsafePointer(pinBox.buffer)
++                        },
++                        context,
++                        &peer)
++                }
++            }
++        }
++
++        guard pairError == nil else {
++            if let peer { rppairing_peer_device_free(peer) }
++            if gate.isCancelled { return .failure(.cancelled) }
++            return .failure(PairingFailure(message: ffiMessage(pairError, fallback: "Apple TV pairing failed")))
++        }
++
++        let writeError = outputURL.path.withCString { rp_pairing_file_write(pairingFile, $0) }
++        guard writeError == nil else {
++            if let peer { rppairing_peer_device_free(peer) }
++            return .failure(PairingFailure(message: ffiMessage(writeError, fallback: "Failed to write pairing file")))
++        }
++
++        var outcome = PairingOutcome(name: device.name, model: "", udid: "")
++        if let peer {
++            let name = swiftString(peer.pointee.name)
++            outcome = PairingOutcome(
++                name: name.isEmpty ? device.name : name,
++                model: swiftString(peer.pointee.model),
++                udid: swiftString(peer.pointee.udid))
++            rppairing_peer_device_free(peer)
++        }
++        return .success(outcome)
++    }
++}
+diff --git a/StikDebug/Features/Pairing/PairingView.swift b/StikDebug/Features/Pairing/PairingView.swift
+new file mode 100644
+index 0000000..8215005
+--- /dev/null
++++ b/StikDebug/Features/Pairing/PairingView.swift
+@@ -0,0 +1,233 @@
++//
++//  PairingView.swift
++//  StikDebug
++//
++//  On-device pairing file creation, ported from StikPair (StephenDev0/StikPair).
++//
++
++import SwiftUI
++
++struct PairingView: View {
++    @ObservedObject private var controller = PairingController.shared
++    @State private var appleTVPin = ""
++    @State private var installError: String?
++
++    var body: some View {
++        Form {
++            content
++        }
++        .navigationTitle("Create Pairing File")
++        .navigationBarTitleDisplayMode(.inline)
++        .animation(.default, value: controller.phase)
++        .onDisappear {
++            controller.cancelIfRunning()
++            controller.reset()
++        }
++    }
++
++    @ViewBuilder
++    private var content: some View {
++        switch controller.phase {
++        case .idle:
++            idleSections
++
++        case .waiting:
++            Section {
++                HStack(spacing: 12) {
++                    ProgressView()
++                    Text("Waiting for a device to connect…")
++                        .foregroundStyle(.secondary)
++                }
++            }
++            Section {
++                guideStep(1, "Open the **Settings** app")
++                guideStep(2, "Go to **Privacy & Security**")
++                guideStep(3, "Tap **Developer Mode**")
++                guideStep(4, "Scroll down and tap **Pair with \(PairingController.hostName)**")
++            } header: { Text("On the device being paired") } footer: {
++                Text("If **Pair with \(PairingController.hostName)** doesn't show up, cancel and try again.")
++            }
++            Section {
++                Button("Cancel", role: .cancel) { controller.cancelHostPairing() }
++            }
++
++        case .showPin(let pin):
++            Section {
++                VStack(spacing: 14) {
++                    Text("Enter this code on your device")
++                        .font(.headline)
++                    Text(pin)
++                        .font(.system(size: 44, weight: .bold, design: .rounded))
++                        .monospacedDigit()
++                        .tracking(8)
++                        .textSelection(.enabled)
++                    ProgressView()
++                }
++                .frame(maxWidth: .infinity)
++                .padding(.vertical, 8)
++            }
++            Section {
++                Button("Cancel", role: .cancel) { controller.cancelHostPairing() }
++            }
++
++        case .browsingAppleTV:
++            Section {
++                if controller.appleTVs.isEmpty {
++                    HStack(spacing: 12) {
++                        ProgressView()
++                        Text("Looking for Apple TVs…")
++                            .foregroundStyle(.secondary)
++                    }
++                } else {
++                    ForEach(controller.appleTVs) { device in
++                        Button {
++                            appleTVPin = ""
++                            controller.pairAppleTV(device)
++                        } label: {
++                            Label(device.name, systemImage: "appletv")
++                        }
++                    }
++                }
++            } header: {
++                Text("Choose an Apple TV")
++            } footer: {
++                Text("On Apple TV, open **Settings › Remotes and Devices › Remote App and Devices**.")
++            }
++            Section {
++                Button("Cancel", role: .cancel) { controller.cancelAppleTVPairing() }
++            }
++
++        case .enteringAppleTVPin(let device):
++            Section {
++                TextField("000000", text: $appleTVPin)
++                    .keyboardType(.numberPad)
++                    .textContentType(.oneTimeCode)
++                    .multilineTextAlignment(.center)
++                    .font(.system(size: 32, weight: .bold, design: .rounded))
++                    .monospacedDigit()
++                    .onChange(of: appleTVPin) { _, value in
++                        appleTVPin = String(value.filter(\.isNumber).prefix(6))
++                    }
++                Button("Pair") {
++                    controller.submitAppleTVPin(appleTVPin)
++                }
++                .disabled(appleTVPin.count != 6)
++            } header: {
++                Text("Pair with \(device.name)")
++            } footer: {
++                Text("Enter the six-digit code shown on your Apple TV.")
++            }
++            Section {
++                Button("Cancel", role: .cancel) { controller.cancelAppleTVPairing() }
++            }
++
++        case .pairingAppleTV(let name):
++            Section {
++                HStack(spacing: 12) {
++                    ProgressView()
++                    Text("Pairing with \(name)…")
++                        .foregroundStyle(.secondary)
++                }
++            }
++            Section {
++                Button("Cancel", role: .cancel) { controller.cancelAppleTVPairing() }
++            }
++
++        case .success(let device):
++            successSections(device)
++
++        case .failed(let message):
++            Section {
++                Label("Pairing failed", systemImage: "xmark.octagon.fill")
++                    .foregroundStyle(.red)
++                Text(message)
++                    .font(.footnote)
++                    .foregroundStyle(.secondary)
++                    .textSelection(.enabled)
++            }
++            Section {
++                Button("Try Again") { controller.reset() }
++            }
++        }
++    }
++
++    @ViewBuilder
++    private var idleSections: some View {
++        Section {
++            Button {
++                controller.start()
++            } label: {
++                Label("Pair iPhone or iPad", systemImage: "iphone")
++            }
++            Button {
++                controller.browseForAppleTVs()
++            } label: {
++                Label("Pair Apple TV", systemImage: "appletv")
++            }
++        } footer: {
++            Text("Creates a pairing file directly on this device, with no computer. The device being paired must run iOS 27 or later (or tvOS for Apple TV).")
++        }
++    }
++
++    @ViewBuilder
++    private func successSections(_ device: PairingController.PairedDevice) -> some View {
++        Section {
++            Label("Paired", systemImage: "checkmark.seal.fill")
++                .foregroundStyle(.green)
++            if !device.name.isEmpty {
++                Text(device.model.isEmpty ? device.name : "\(device.name) · \(device.model)")
++                    .font(.subheadline)
++                    .foregroundStyle(.secondary)
++            }
++        }
++
++        Section {
++            if device.canInstall {
++                if controller.didInstallPairingFile {
++                    Label("Now used by StikDebug", systemImage: "checkmark.circle.fill")
++                        .foregroundStyle(.green)
++                } else {
++                    Button {
++                        do {
++                            try controller.installPairingFile()
++                            installError = nil
++                        } catch {
++                            installError = error.localizedDescription
++                        }
++                    } label: {
++                        Label("Use for StikDebug", systemImage: "arrow.down.doc")
++                    }
++                }
++            }
++            ShareLink(item: device.fileURL) {
++                Label("Export Pairing File", systemImage: "square.and.arrow.up")
++            }
++            if let installError {
++                Text(installError)
++                    .font(.caption)
++                    .foregroundStyle(.red)
++            }
++        } footer: {
++            if device.canInstall {
++                Text("“Use for StikDebug” replaces the pairing file StikDebug currently uses. You can also export the file for other tools.")
++            }
++        }
++
++        Section {
++            Button("Done") { controller.reset() }
++        }
++    }
++
++    private func guideStep(_ number: Int, _ text: LocalizedStringKey) -> some View {
++        HStack(alignment: .firstTextBaseline, spacing: 10) {
++            Text("\(number)")
++                .font(.caption.bold())
++                .foregroundStyle(.white)
++                .frame(width: 20, height: 20)
++                .background(.tint, in: Circle())
++            Text(text)
++                .font(.subheadline)
++                .fixedSize(horizontal: false, vertical: true)
++        }
++    }
++}
+diff --git a/StikDebug/Info.plist b/StikDebug/Info.plist
+index 62c20a9..5caa1df 100644
+--- a/StikDebug/Info.plist
++++ b/StikDebug/Info.plist
+@@ -23,6 +23,16 @@
+ 		<string>_remotepairing._tcp</string>
+ 		<string>_stikdebug._tcp</string>
+ 		<string>_stikdebug._udp</string>
++		<string>_remotepairing-pairable-host._tcp</string>
++		<string>_remotepairing-manual-pairing._tcp</string>
++		<!-- Throwaway type used only to trigger the Local Network prompt. -->
++		<string>_stikpairprobe._tcp</string>
++	</array>
++	<!-- Keeps on-device pairing alive (BGContinuedProcessingTask) while the user
++	     leaves the app to start pairing from Settings. -->
++	<key>BGTaskSchedulerPermittedIdentifiers</key>
++	<array>
++		<string>$(PRODUCT_BUNDLE_IDENTIFIER).pairing</string>
+ 	</array>
+ 	<key>UIBackgroundModes</key>
+ 	<array>
+diff --git a/StikDebug/Views/SettingsView.swift b/StikDebug/Views/SettingsView.swift
+index 7a715fb..131492b 100644
+--- a/StikDebug/Views/SettingsView.swift
++++ b/StikDebug/Views/SettingsView.swift
+@@ -78,6 +78,12 @@ struct SettingsView: View {
+                     }
+                     .disabled(isImportingFile)
+ 
++                    NavigationLink {
++                        PairingView()
++                    } label: {
++                        Label("Create Pairing File on Device", systemImage: "link.badge.plus")
++                    }
++
+                     if isImportingFile {
+                         HStack(spacing: 10) {
+                             ProgressView()
