@@ -51,8 +51,37 @@ func handleJSContextSendDebugCommand(_ context: JSContext?, _ commandStr: String
         }
     }
 
-    guard let response else { return nil }
-    return String(cString: response)
+    let responseString = response.map { String(cString: $0) } ?? ""
+
+    // Every later command dies with a socket error once an attach is refused,
+    // so the refusal is reported here instead of letting the script run on.
+    if commandStr.hasPrefix("vAttach"), let reason = attachFailure(in: responseString) {
+        jsException(reason, in: context)
+        return nil
+    }
+
+    guard response != nil else { return nil }
+    return responseString
+}
+
+/// debugserver answers a failed `vAttach` with `E` and a hex error code, and a
+/// successful one with a stop packet (`T`, `S`, `W` or `X`). Returns the
+/// explanation to raise, or nil when the attach succeeded.
+private func attachFailure(in response: String) -> String? {
+    let code: String
+    if response.isEmpty {
+        code = "nothing"
+    } else if response.hasPrefix("E") {
+        let digits = response.dropFirst().prefix(while: \.isHexDigit)
+        guard !digits.isEmpty else { return nil }
+        code = "E\(digits)"
+    } else {
+        return nil
+    }
+
+    return "debugserver refused to attach to the app (vAttach replied \(code)). "
+        + "The app has to be signed with the get-task-allow entitlement, must not "
+        + "already be under a debugger, and must still be running."
 }
 
 private func hexCharacter(for value: UInt8) -> UInt8 {

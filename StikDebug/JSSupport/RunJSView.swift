@@ -110,8 +110,10 @@ final class RunJSViewModel: ObservableObject, Identifiable, @unchecked Sendable 
         DispatchQueue.main.async {
             if let exception = self.context?.exception {
                 self.logs.append(exception.debugDescription)
+                self.logs.append("Script stopped before it finished — JIT was not enabled.")
+            } else {
+                self.logs.append("Script Execution Completed")
             }
-            self.logs.append("Script Execution Completed")
             self.logs.append("You are safe to close this window.")
         }
     }

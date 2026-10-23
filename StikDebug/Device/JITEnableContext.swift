@@ -735,8 +735,20 @@ final class JITEnableContext {
         } else {
             let attachCommand = "vAttach;\(String(UInt32(pid), radix: 16))"
             do {
-                let response = try sendDebugCommand(attachCommand, debugProxy: debugProxy) ?? "<nil>"
-                emitLog("Attach response: \(response)", logger: logger)
+                let response = try sendDebugCommand(attachCommand, debugProxy: debugProxy) ?? ""
+                let described = response.isEmpty ? "<nil>" : response
+                emitLog("Attach response: \(described)", logger: logger)
+
+                // A stop packet means the attach worked; anything starting with
+                // E is debugserver turning it down.
+                if response.isEmpty || response.hasPrefix("E") {
+                    emitLog(
+                        "Error: debugserver refused to attach to PID \(pid). The app has to be signed "
+                            + "with the get-task-allow entitlement, must not already be under a debugger, "
+                            + "and must still be running.",
+                        logger: logger
+                    )
+                }
             } catch {
                 emitLog(error.localizedDescription, logger: logger)
             }
