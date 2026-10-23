@@ -406,6 +406,14 @@ final class JITEnableContext {
         return try body(adapter, handshake)
     }
 
+    /// Everything a launch needs: the instruments remote server, plus the
+    /// tunnel handles the CoreDevice app service connects over.
+    private struct LaunchContext {
+        let adapter: OpaquePointer
+        let handshake: OpaquePointer
+        let remoteServer: OpaquePointer
+    }
+
     private struct DebugSession {
         var remoteServer: OpaquePointer?
         var debugProxy: OpaquePointer?
@@ -560,7 +568,7 @@ final class JITEnableContext {
     }
 
     private func withConnectedDebugSession<T>(
-        _ body: (OpaquePointer, OpaquePointer) throws -> T
+        _ body: (LaunchContext, OpaquePointer) throws -> T
     ) throws -> T {
         try withFreshDebugTunnel(hostname: "StikDebugDebug") { adapter, handshake in
             var session = try connectDebugSession(adapter: adapter, handshake: handshake)
@@ -571,12 +579,13 @@ final class JITEnableContext {
                 throw makeError("Debug session was not created")
             }
 
-            return try body(remoteServer, debugProxy)
+            let context = LaunchContext(adapter: adapter, handshake: handshake, remoteServer: remoteServer)
+            return try body(context, debugProxy)
         }
     }
 
     private func withConnectedRemoteServer<T>(
-        _ body: (OpaquePointer) throws -> T
+        _ body: (LaunchContext) throws -> T
     ) throws -> T {
         try withFreshDebugTunnel(hostname: "StikDebugRemoteServer") { adapter, handshake in
             var remoteServer: OpaquePointer?
@@ -589,7 +598,7 @@ final class JITEnableContext {
             }
 
             defer { remote_server_free(remoteServer) }
-            return try body(remoteServer)
+            return try body(LaunchContext(adapter: adapter, handshake: handshake, remoteServer: remoteServer))
         }
     }
 
@@ -744,22 +753,137 @@ final class JITEnableContext {
     }
 
     func debugApp(withBundleID bundleID: String, logger: LogFunc?, jsCallback: DebugAppCallback?) -> Bool {
-        runDebugSession(logger: logger, callback: jsCallback) { remoteServer in
-            try withProcessControl(remoteServer: remoteServer) { processControl in
+        runDebugSession(logger: logger, callback: jsCallback) { context in
+            try launchApp(
+                bundleID,
+                context: context,
+                startSuspended: true,
+                killExisting: false,
+                environment: Self.mallocDebugEnvVars(),
+                fallback: "Failed to launch app",
+                logger: logger
+            )
+        }
+    }
+
+    /// Launches `bundleID` and returns its PID.
+    ///
+    /// The instruments process control channel goes first: it is the only one
+    /// that carries environment variables. Some systems answer its launch
+    /// request with something other than a PID ("expected integer PID in
+    /// launch app response"), so the CoreDevice app service is tried next,
+    /// and a failure there reports both reasons rather than hiding either.
+    private func launchApp(
+        _ bundleID: String,
+        context: LaunchContext,
+        startSuspended: Bool,
+        killExisting: Bool,
+        environment: [String],
+        fallback: String,
+        logger: LogFunc?
+    ) throws -> Int32 {
+        let processControlError: NSError
+        do {
+            return try withProcessControl(remoteServer: context.remoteServer) { processControl in
                 var pid: UInt64 = 0
                 let ffiError = bundleID.withCString { bundleID in
-                    Self.withCStringArray(Self.mallocDebugEnvVars()) { envPtr, envCount in
-                        process_control_launch_app(processControl, bundleID, envPtr, envCount, nil, 0, true, false, &pid)
+                    Self.withCStringArray(environment) { envPtr, envCount in
+                        process_control_launch_app(
+                            processControl,
+                            bundleID,
+                            envPtr,
+                            envCount,
+                            nil,
+                            0,
+                            startSuspended,
+                            killExisting,
+                            &pid
+                        )
                     }
                 }
 
                 if let ffiError {
-                    throw error(from: ffiError, fallback: "Failed to launch app")
+                    throw error(from: ffiError, fallback: fallback)
                 }
 
                 return Int32(pid)
             }
+        } catch {
+            processControlError = error as NSError
         }
+
+        emitLog(
+            "Process control could not launch \(bundleID): \(processControlError.localizedDescription). Falling back to the CoreDevice app service.",
+            logger: logger
+        )
+
+        if !environment.isEmpty {
+            emitLog(
+                "Warning: the CoreDevice app service cannot pass \(environment.joined(separator: ", ")) to the app",
+                logger: logger
+            )
+        }
+
+        do {
+            let pid = try launchAppViaAppService(
+                bundleID,
+                context: context,
+                startSuspended: startSuspended,
+                killExisting: killExisting,
+                fallback: fallback
+            )
+            emitLog("CoreDevice app service launched \(bundleID) (PID \(pid))", logger: logger)
+            return pid
+        } catch {
+            throw makeError(
+                "\(processControlError.localizedDescription) — CoreDevice app service: \(error.localizedDescription)",
+                code: processControlError.code
+            )
+        }
+    }
+
+    private func launchAppViaAppService(
+        _ bundleID: String,
+        context: LaunchContext,
+        startSuspended: Bool,
+        killExisting: Bool,
+        fallback: String
+    ) throws -> Int32 {
+        var appService: OpaquePointer?
+        if let ffiError = app_service_connect_rsd(context.adapter, context.handshake, &appService) {
+            throw error(from: ffiError, fallback: "Failed to connect app service")
+        }
+
+        guard let appService else {
+            throw makeError("App service handle was not created")
+        }
+
+        defer { app_service_free(appService) }
+
+        var response: UnsafeMutablePointer<LaunchResponseC>?
+        let ffiError = bundleID.withCString { bundleID in
+            app_service_launch_app(
+                appService,
+                bundleID,
+                nil,
+                0,
+                killExisting ? 1 : 0,
+                startSuspended ? 1 : 0,
+                nil,
+                &response
+            )
+        }
+
+        if let ffiError {
+            throw error(from: ffiError, fallback: fallback)
+        }
+
+        guard let response else {
+            throw makeError("Launch response was not created")
+        }
+
+        defer { app_service_free_launch_response(response) }
+        return Int32(bitPattern: response.pointee.pid)
     }
 
     func debugApp(withPID pid: Int32, logger: LogFunc?, jsCallback: DebugAppCallback?) -> Bool {
@@ -768,19 +892,16 @@ final class JITEnableContext {
 
     func launchAppWithoutDebug(_ bundleID: String, logger: LogFunc?) -> Bool {
         do {
-            let pid = try withConnectedRemoteServer { remoteServer in
-                try withProcessControl(remoteServer: remoteServer) { processControl in
-                    var pid: UInt64 = 0
-                    let ffiError = bundleID.withCString { bundleID in
-                        process_control_launch_app(processControl, bundleID, nil, 0, nil, 0, false, true, &pid)
-                    }
-
-                    if let ffiError {
-                        throw error(from: ffiError, fallback: "Failed to launch app")
-                    }
-
-                    return pid
-                }
+            let pid = try withConnectedRemoteServer { context in
+                try launchApp(
+                    bundleID,
+                    context: context,
+                    startSuspended: false,
+                    killExisting: true,
+                    environment: [],
+                    fallback: "Failed to launch app",
+                    logger: logger
+                )
             }
 
             emitLog("Launched app (PID \(pid))", logger: logger)
@@ -793,8 +914,16 @@ final class JITEnableContext {
 
     func relaunchApp(_ bundleID: String, logger: LogFunc? = nil) -> Bool {
         do {
-            let pid = try withConnectedRemoteServer { remoteServer in
-                try relaunchApp(bundleID, remoteServer: remoteServer)
+            let pid = try withConnectedRemoteServer { context in
+                try launchApp(
+                    bundleID,
+                    context: context,
+                    startSuspended: false,
+                    killExisting: false,
+                    environment: [],
+                    fallback: "Failed to return to app",
+                    logger: logger
+                )
             }
 
             emitLog("Returned to \(bundleID) (PID \(pid))", logger: logger)
@@ -918,15 +1047,15 @@ final class JITEnableContext {
     private func runDebugSession(
         logger: LogFunc?,
         callback: DebugAppCallback?,
-        pidProvider: (OpaquePointer) throws -> Int32
+        pidProvider: (LaunchContext) throws -> Int32
     ) -> Bool {
         do {
-            try withConnectedDebugSession { remoteServer, debugProxy in
-                let pid = try pidProvider(remoteServer)
+            try withConnectedDebugSession { context, debugProxy in
+                let pid = try pidProvider(context)
                 runDebugServerCommand(
                     pid: pid,
                     debugProxy: debugProxy,
-                    remoteServer: remoteServer,
+                    remoteServer: context.remoteServer,
                     logger: logger,
                     callback: callback
                 )
