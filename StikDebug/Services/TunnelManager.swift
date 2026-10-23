@@ -124,7 +124,7 @@ final class TunnelManager: ObservableObject {
             showTryAgain: false,
             primaryButtonText: "Select New File"
         ) { _ in
-            NotificationCenter.default.post(name: NSNotification.Name("ShowPairingFilePicker"), object: nil)
+            NotificationCenter.default.post(name: .showPairingFilePicker, object: nil)
         }
     }
 

@@ -55,6 +55,8 @@ struct MainTabView: View {
     @State private var detachedFeature: AppFeature?
     @State private var didSetInitialHome = false
     @State private var pendingLocationAction: ExternalLocationAction?
+    @State private var isShowingPairingFilePicker = false
+    @State private var pairingImportError: String?
 
     var body: some View {
         ZStack {
@@ -76,6 +78,36 @@ struct MainTabView: View {
             }
             .onOpenURL { url in
                 handleURL(url)
+            }
+            // The connection alert offers to replace an unreadable pairing
+            // file; the picker lives here so it opens from whichever tab the
+            // alert appeared on.
+            .onReceive(NotificationCenter.default.publisher(for: .showPairingFilePicker)) { _ in
+                isShowingPairingFilePicker = true
+            }
+            .fileImporter(
+                isPresented: $isShowingPairingFilePicker,
+                allowedContentTypes: PairingFileStore.supportedContentTypes,
+                allowsMultipleSelection: false,
+                onCompletion: importPairingFile
+            )
+            .alert(
+                "Import Failed",
+                isPresented: Binding(
+                    get: { pairingImportError != nil },
+                    set: { isPresented in
+                        if !isPresented {
+                            pairingImportError = nil
+                        }
+                    }
+                ),
+                presenting: pairingImportError
+            ) { _ in
+                Button("OK", role: .cancel) {
+                    pairingImportError = nil
+                }
+            } message: { message in
+                Text(message)
             }
             .confirmationDialog(
                 pendingLocationAction?.title ?? "External Location Request",
@@ -112,6 +144,25 @@ struct MainTabView: View {
                         }
                 }
             }
+        }
+    }
+
+    private func importPairingFile(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            do {
+                try PairingFileStore.importFromPicker(url)
+                markTunnelDisconnected()
+                startTunnelInBackground()
+                NotificationCenter.default.post(name: .pairingFileImported, object: nil)
+            } catch {
+                LogManager.shared.addErrorLog("Failed to import pairing file: \(error.localizedDescription)")
+                pairingImportError = error.localizedDescription
+            }
+        case .failure(let error):
+            LogManager.shared.addErrorLog("Pairing file picker failed: \(error.localizedDescription)")
+            pairingImportError = error.localizedDescription
         }
     }
 
