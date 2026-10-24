@@ -21,6 +21,7 @@ struct SettingsView: View {
     @AppStorage(UserDefaults.Keys.targetDeviceIP) private var targetDeviceIP = DeviceConnectionContext.defaultTargetIPAddress
     @AppStorage("TunnelRemotePairingPort") private var remotePairingPortOverride = ""
     @AppStorage(UserDefaults.Keys.mallocDebug) private var mallocDebug = false
+    @AppStorage(UserDefaults.Keys.debugHeartbeat) private var debugHeartbeat = true
 
     private enum ConnectionField: Hashable {
         case address
@@ -142,6 +143,14 @@ struct SettingsView: View {
                 }
 
                 Section("Debugging") {
+                    Toggle(isOn: $debugHeartbeat) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Debug Heartbeat")
+                            Text("Answers the device's heartbeat over a second tunnel during a debug session. Turn it off if the debug connection dies the moment it is established.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+
                     Toggle(isOn: $mallocDebug) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Malloc Debugging")

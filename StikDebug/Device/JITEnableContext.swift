@@ -116,6 +116,16 @@ final class JITEnableContext {
         }
     }
 
+    /// The keepalive answers the device's heartbeat over a tunnel of its own,
+    /// opened while the debug session's tunnel is already up. Defaults to on.
+    private static var debugHeartbeatIsEnabled: Bool {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: UserDefaults.Keys.debugHeartbeat) != nil else {
+            return true
+        }
+        return defaults.bool(forKey: UserDefaults.Keys.debugHeartbeat)
+    }
+
     private static func mallocDebugEnvVars() -> [String] {
         let defaults = UserDefaults.standard
         let enableAll = defaults.bool(forKey: UserDefaults.Keys.mallocDebug)
@@ -767,14 +777,19 @@ final class JITEnableContext {
 
         if let callback {
             let keepAlive: DebugHeartbeatKeepAlive?
-            do {
-                let heartbeat = try connectHeartbeatKeepAlive(logger: logger)
-                try heartbeat.start()
-                keepAlive = heartbeat
-                emitLog("Debug heartbeat keepalive started", logger: logger)
-            } catch {
+            if Self.debugHeartbeatIsEnabled {
+                do {
+                    let heartbeat = try connectHeartbeatKeepAlive(logger: logger)
+                    try heartbeat.start()
+                    keepAlive = heartbeat
+                    emitLog("Debug heartbeat keepalive started", logger: logger)
+                } catch {
+                    keepAlive = nil
+                    emitLog("Warning: failed to start debug heartbeat keepalive: \(error.localizedDescription)", logger: logger)
+                }
+            } else {
                 keepAlive = nil
-                emitLog("Warning: failed to start debug heartbeat keepalive: \(error.localizedDescription)", logger: logger)
+                emitLog("Debug heartbeat keepalive is off; the session runs on a single tunnel", logger: logger)
             }
             defer {
                 keepAlive?.stop()

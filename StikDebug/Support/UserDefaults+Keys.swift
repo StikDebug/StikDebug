@@ -15,6 +15,10 @@ extension UserDefaults {
         static let defaultScriptName = "DefaultScriptName"
         static let defaultScriptNameValue = ""
         static let targetDeviceIP = "TunnelDeviceIP"
+        /// Opens a second tunnel during a debug session to answer the device's
+        /// heartbeat. Turning it off is worth trying when the debug connection
+        /// dies the moment it is established.
+        static let debugHeartbeat = "enableDebugHeartbeat"
         /// Attaches processes with MallocGuardEdges and MallocScribble.
         static let mallocDebug = "enableMallocDebug"
         static let mallocGuardEdges = "enableMallocGuardEdges"
