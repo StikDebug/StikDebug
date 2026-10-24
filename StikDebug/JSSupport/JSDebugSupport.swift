@@ -79,7 +79,18 @@ private func attachFailure(in response: String) -> String? {
         return nil
     }
 
-    return "debugserver refused to attach to the app (vAttach replied \(code)). "
+    let refusal = "debugserver refused to attach to the app (vAttach replied \(code)). "
+
+    // Blaming the app's signature would be wrong here: it only reached this
+    // point because process control refused to launch it.
+    if JITEnableContext.shared.launchedThroughAppService {
+        return refusal
+            + "It was started through the CoreDevice app service because process control "
+            + "turned the launch down, and a process started that way may not accept a "
+            + "debugger. The launch failure is the thing to fix — see the Console log."
+    }
+
+    return refusal
         + "The app has to be signed with the get-task-allow entitlement, must not "
         + "already be under a debugger, and must still be running."
 }

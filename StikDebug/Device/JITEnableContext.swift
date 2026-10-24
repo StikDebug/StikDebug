@@ -152,6 +152,23 @@ final class JITEnableContext {
     private var handshake: OpaquePointer?
 
     private let tunnelLock = NSLock()
+    private let launchStateLock = NSLock()
+    private var launchedThroughAppServiceStorage = false
+
+    /// Whether the process of the current debug session was started by the
+    /// CoreDevice app service because process control turned the launch down.
+    /// A refused attach then says more about that than about the app.
+    var launchedThroughAppService: Bool {
+        launchStateLock.lock()
+        defer { launchStateLock.unlock() }
+        return launchedThroughAppServiceStorage
+    }
+
+    private func setLaunchedThroughAppService(_ value: Bool) {
+        launchStateLock.lock()
+        launchedThroughAppServiceStorage = value
+        launchStateLock.unlock()
+    }
     private var tunnelConnecting = false
     private var tunnelSemaphore: DispatchSemaphore?
     private var lastTunnelError: NSError?
@@ -837,6 +854,8 @@ final class JITEnableContext {
         fallback: String,
         logger: LogFunc?
     ) throws -> Int32 {
+        setLaunchedThroughAppService(false)
+
         let processControlError: NSError
         do {
             return try withProcessControl(remoteServer: context.remoteServer) { processControl in
@@ -886,6 +905,7 @@ final class JITEnableContext {
                 killExisting: killExisting,
                 fallback: fallback
             )
+            setLaunchedThroughAppService(true)
             emitLog("CoreDevice app service launched \(bundleID) (PID \(pid))", logger: logger)
 
             if startSuspended {
