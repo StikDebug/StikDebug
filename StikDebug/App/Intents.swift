@@ -186,9 +186,8 @@ struct EnableJITIntent: AppIntent, ForegroundContinuableIntent {
             }
         }
 
-        let logger: LogFunc = { message in
-            if let message { LogManager.shared.addInfoLog(message) }
-        }
+        // emitLog already records each message; see HomeView.
+        let logger: LogFunc = { _ in }
 
         let target = app?.displayName ?? bundleID
         let success = JITEnableContext.shared.debugApp(withBundleID: bundleID, logger: logger, jsCallback: callback)

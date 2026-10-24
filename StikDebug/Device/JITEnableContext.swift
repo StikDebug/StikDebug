@@ -116,6 +116,16 @@ final class JITEnableContext {
         }
     }
 
+    /// The keepalive answers the device's heartbeat over a tunnel of its own,
+    /// opened while the debug session's tunnel is already up. Defaults to on.
+    private static var debugHeartbeatIsEnabled: Bool {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: UserDefaults.Keys.debugHeartbeat) != nil else {
+            return true
+        }
+        return defaults.bool(forKey: UserDefaults.Keys.debugHeartbeat)
+    }
+
     private static func mallocDebugEnvVars() -> [String] {
         let defaults = UserDefaults.standard
         let enableAll = defaults.bool(forKey: UserDefaults.Keys.mallocDebug)
@@ -152,6 +162,23 @@ final class JITEnableContext {
     private var handshake: OpaquePointer?
 
     private let tunnelLock = NSLock()
+    private let launchStateLock = NSLock()
+    private var launchedThroughAppServiceStorage = false
+
+    /// Whether the process of the current debug session was started by the
+    /// CoreDevice app service because process control turned the launch down.
+    /// A refused attach then says more about that than about the app.
+    var launchedThroughAppService: Bool {
+        launchStateLock.lock()
+        defer { launchStateLock.unlock() }
+        return launchedThroughAppServiceStorage
+    }
+
+    private func setLaunchedThroughAppService(_ value: Bool) {
+        launchStateLock.lock()
+        launchedThroughAppServiceStorage = value
+        launchStateLock.unlock()
+    }
     private var tunnelConnecting = false
     private var tunnelSemaphore: DispatchSemaphore?
     private var lastTunnelError: NSError?
@@ -232,20 +259,55 @@ final class JITEnableContext {
             throw makeError("Pairing file not found!", code: -17)
         }
 
-        var pairingFile: OpaquePointer?
-        let ffiError = pairingFileURL.path.withCString { path in
-            rp_pairing_file_read(path, &pairingFile)
+        let payload: Data
+        do {
+            payload = try PairingFileSanitizer.sanitized(Data(contentsOf: pairingFileURL))
+        } catch {
+            throw makeError(
+                "Failed to read pairing file!: \(error.localizedDescription)",
+                code: PairingFileSanitizer.errorCode
+            )
+        }
+
+        var (pairingFile, ffiError) = readPairingFile(payload)
+
+        // Foundation accepts a handful of documents the parser in idevice turns
+        // down. Writing the record back out in canonical form clears those up,
+        // so the repaired copy is kept for the paths that read it by path.
+        if ffiError != nil,
+           let canonical = try? PairingFileSanitizer.canonicalized(payload),
+           canonical != payload {
+            idevice_error_free(ffiError)
+            (pairingFile, ffiError) = readPairingFile(canonical)
+
+            if ffiError == nil {
+                try? PairingFileStore.store(canonical)
+                LogManager.shared.addWarningLog("Rewrote the pairing file in canonical form to make it readable")
+            }
         }
 
         if let ffiError {
-            throw error(from: ffiError, fallback: "Failed to read pairing file!")
+            let detail = error(from: ffiError, fallback: "Failed to read pairing file!")
+            throw makeError(detail.localizedDescription, code: PairingFileSanitizer.errorCode)
         }
 
         guard let pairingFile else {
-            throw makeError("Failed to read pairing file!", code: -17)
+            throw makeError("Failed to read pairing file!", code: PairingFileSanitizer.errorCode)
         }
 
         return pairingFile
+    }
+
+    private func readPairingFile(_ data: Data) -> (OpaquePointer?, UnsafeMutablePointer<IdeviceFfiError>?) {
+        var handle: OpaquePointer?
+        let ffiError = data.withUnsafeBytes { rawBuffer in
+            rp_pairing_file_from_bytes(
+                rawBuffer.bindMemory(to: UInt8.self).baseAddress,
+                UInt(data.count),
+                &handle
+            )
+        }
+        return (handle, ffiError)
     }
 
     private func createTunnel(hostname: String) throws -> TunnelHandles {
@@ -371,6 +433,14 @@ final class JITEnableContext {
         return try body(adapter, handshake)
     }
 
+    /// Everything a launch needs: the instruments remote server, plus the
+    /// tunnel handles the CoreDevice app service connects over.
+    private struct LaunchContext {
+        let adapter: OpaquePointer
+        let handshake: OpaquePointer
+        let remoteServer: OpaquePointer
+    }
+
     private struct DebugSession {
         var remoteServer: OpaquePointer?
         var debugProxy: OpaquePointer?
@@ -390,6 +460,24 @@ final class JITEnableContext {
     private final class DebugHeartbeatKeepAlive {
         private static let defaultInterval: UInt64 = 2
         private static let maxInterval: UInt64 = 3
+        private static let maximumConsecutiveFailures = 3
+        private static let retryDelay: TimeInterval = 1
+
+        /// Markers for a connection that is gone for good. `heartbeat_get_marco`
+        /// returns at once on one of these instead of blocking for the
+        /// interval, so retrying spins the loop as fast as the CPU allows.
+        private static let lostConnectionMarkers = [
+            "BrokenPipe",
+            "NotConnected",
+            "channel closed",
+            "ConnectionReset",
+            "ConnectionAborted",
+            "UnexpectedEof"
+        ]
+
+        private static func describesLostConnection(_ description: String) -> Bool {
+            lostConnectionMarkers.contains { description.localizedCaseInsensitiveContains($0) }
+        }
 
         private let queue = DispatchQueue(label: "com.stikdebug.debug-heartbeat", qos: .utility)
         private let stateLock = NSLock()
@@ -470,6 +558,7 @@ final class JITEnableContext {
             startupSemaphore.signal()
 
             var interval = Self.defaultInterval
+            var consecutiveFailures = 0
 
             while !shouldStop(), let client {
                 var suggestedInterval: UInt64 = 0
@@ -485,6 +574,7 @@ final class JITEnableContext {
 
                     if description.contains("HeartbeatTimeout") {
                         interval = Self.defaultInterval
+                        consecutiveFailures = 0
                         continue
                     }
 
@@ -493,11 +583,31 @@ final class JITEnableContext {
                         break
                     }
 
-                    log("Debug heartbeat warning: \(description)")
+                    if Self.describesLostConnection(description) {
+                        log("Debug heartbeat stopped, the connection is gone: \(description)")
+                        break
+                    }
+
+                    consecutiveFailures += 1
+
+                    // Only the first of a run is worth a line: repeating it
+                    // drowns every other message in the console.
+                    if consecutiveFailures == 1 {
+                        log("Debug heartbeat warning: \(description)")
+                    }
+
+                    if consecutiveFailures >= Self.maximumConsecutiveFailures {
+                        log("Debug heartbeat stopped after \(consecutiveFailures) failures: \(description)")
+                        break
+                    }
+
+                    // Never retry faster than the heartbeat interval itself.
+                    Thread.sleep(forTimeInterval: Self.retryDelay)
                     interval = Self.defaultInterval
                     continue
                 }
 
+                consecutiveFailures = 0
                 interval = min(max(suggestedInterval, 1), Self.maxInterval)
 
                 if let ffiError = heartbeat_send_polo(client) {
@@ -525,7 +635,7 @@ final class JITEnableContext {
     }
 
     private func withConnectedDebugSession<T>(
-        _ body: (OpaquePointer, OpaquePointer) throws -> T
+        _ body: (LaunchContext, OpaquePointer) throws -> T
     ) throws -> T {
         try withFreshDebugTunnel(hostname: "StikDebugDebug") { adapter, handshake in
             var session = try connectDebugSession(adapter: adapter, handshake: handshake)
@@ -536,12 +646,13 @@ final class JITEnableContext {
                 throw makeError("Debug session was not created")
             }
 
-            return try body(remoteServer, debugProxy)
+            let context = LaunchContext(adapter: adapter, handshake: handshake, remoteServer: remoteServer)
+            return try body(context, debugProxy)
         }
     }
 
     private func withConnectedRemoteServer<T>(
-        _ body: (OpaquePointer) throws -> T
+        _ body: (LaunchContext) throws -> T
     ) throws -> T {
         try withFreshDebugTunnel(hostname: "StikDebugRemoteServer") { adapter, handshake in
             var remoteServer: OpaquePointer?
@@ -554,7 +665,7 @@ final class JITEnableContext {
             }
 
             defer { remote_server_free(remoteServer) }
-            return try body(remoteServer)
+            return try body(LaunchContext(adapter: adapter, handshake: handshake, remoteServer: remoteServer))
         }
     }
 
@@ -577,7 +688,10 @@ final class JITEnableContext {
 
     private func connectHeartbeatKeepAlive(logger: LogFunc?) throws -> DebugHeartbeatKeepAlive {
         return DebugHeartbeatKeepAlive(
-            logger: logger,
+            logger: { [weak self] message in
+                guard let message else { return }
+                self?.emitLog(message, logger: logger)
+            },
             makeClient: { [weak self] in
                 guard let self else {
                     throw NSError(
@@ -663,14 +777,19 @@ final class JITEnableContext {
 
         if let callback {
             let keepAlive: DebugHeartbeatKeepAlive?
-            do {
-                let heartbeat = try connectHeartbeatKeepAlive(logger: logger)
-                try heartbeat.start()
-                keepAlive = heartbeat
-                emitLog("Debug heartbeat keepalive started", logger: logger)
-            } catch {
+            if Self.debugHeartbeatIsEnabled {
+                do {
+                    let heartbeat = try connectHeartbeatKeepAlive(logger: logger)
+                    try heartbeat.start()
+                    keepAlive = heartbeat
+                    emitLog("Debug heartbeat keepalive started", logger: logger)
+                } catch {
+                    keepAlive = nil
+                    emitLog("Warning: failed to start debug heartbeat keepalive: \(error.localizedDescription)", logger: logger)
+                }
+            } else {
                 keepAlive = nil
-                emitLog("Warning: failed to start debug heartbeat keepalive: \(error.localizedDescription)", logger: logger)
+                emitLog("Debug heartbeat keepalive is off; the session runs on a single tunnel", logger: logger)
             }
             defer {
                 keepAlive?.stop()
@@ -691,8 +810,20 @@ final class JITEnableContext {
         } else {
             let attachCommand = "vAttach;\(String(UInt32(pid), radix: 16))"
             do {
-                let response = try sendDebugCommand(attachCommand, debugProxy: debugProxy) ?? "<nil>"
-                emitLog("Attach response: \(response)", logger: logger)
+                let response = try sendDebugCommand(attachCommand, debugProxy: debugProxy) ?? ""
+                let described = response.isEmpty ? "<nil>" : response
+                emitLog("Attach response: \(described)", logger: logger)
+
+                // A stop packet means the attach worked; anything starting with
+                // E is debugserver turning it down.
+                if response.isEmpty || response.hasPrefix("E") {
+                    emitLog(
+                        "Error: debugserver refused to attach to PID \(pid). The app has to be signed "
+                            + "with the get-task-allow entitlement, must not already be under a debugger, "
+                            + "and must still be running.",
+                        logger: logger
+                    )
+                }
             } catch {
                 emitLog(error.localizedDescription, logger: logger)
             }
@@ -709,22 +840,153 @@ final class JITEnableContext {
     }
 
     func debugApp(withBundleID bundleID: String, logger: LogFunc?, jsCallback: DebugAppCallback?) -> Bool {
-        runDebugSession(logger: logger, callback: jsCallback) { remoteServer in
-            try withProcessControl(remoteServer: remoteServer) { processControl in
+        runDebugSession(logger: logger, callback: jsCallback) { context in
+            try launchApp(
+                bundleID,
+                context: context,
+                startSuspended: true,
+                killExisting: false,
+                environment: Self.mallocDebugEnvVars(),
+                fallback: "Failed to launch app",
+                logger: logger
+            )
+        }
+    }
+
+    /// Launches `bundleID` and returns its PID.
+    ///
+    /// The instruments process control channel goes first: it is the only one
+    /// that carries environment variables. Some systems answer its launch
+    /// request with something other than a PID ("expected integer PID in
+    /// launch app response"), so the CoreDevice app service is tried next,
+    /// and a failure there reports both reasons rather than hiding either.
+    private func launchApp(
+        _ bundleID: String,
+        context: LaunchContext,
+        startSuspended: Bool,
+        killExisting: Bool,
+        environment: [String],
+        fallback: String,
+        logger: LogFunc?
+    ) throws -> Int32 {
+        setLaunchedThroughAppService(false)
+
+        let processControlError: NSError
+        do {
+            return try withProcessControl(remoteServer: context.remoteServer) { processControl in
                 var pid: UInt64 = 0
                 let ffiError = bundleID.withCString { bundleID in
-                    Self.withCStringArray(Self.mallocDebugEnvVars()) { envPtr, envCount in
-                        process_control_launch_app(processControl, bundleID, envPtr, envCount, nil, 0, true, false, &pid)
+                    Self.withCStringArray(environment) { envPtr, envCount in
+                        process_control_launch_app(
+                            processControl,
+                            bundleID,
+                            envPtr,
+                            envCount,
+                            nil,
+                            0,
+                            startSuspended,
+                            killExisting,
+                            &pid
+                        )
                     }
                 }
 
                 if let ffiError {
-                    throw error(from: ffiError, fallback: "Failed to launch app")
+                    throw error(from: ffiError, fallback: fallback)
                 }
 
                 return Int32(pid)
             }
+        } catch {
+            processControlError = error as NSError
         }
+
+        emitLog(
+            "Process control could not launch \(bundleID): \(processControlError.localizedDescription). Falling back to the CoreDevice app service.",
+            logger: logger
+        )
+
+        if !environment.isEmpty {
+            emitLog(
+                "Warning: the CoreDevice app service cannot pass \(environment.joined(separator: ", ")) to the app",
+                logger: logger
+            )
+        }
+
+        do {
+            let pid = try launchAppViaAppService(
+                bundleID,
+                context: context,
+                killExisting: killExisting,
+                fallback: fallback
+            )
+            setLaunchedThroughAppService(true)
+            emitLog("CoreDevice app service launched \(bundleID) (PID \(pid))", logger: logger)
+
+            if startSuspended {
+                emitLog(
+                    "Warning: \(bundleID) is running rather than held at its entry point, because a process the "
+                        + "CoreDevice app service holds suspended cannot be attached to. Anything the app does "
+                        + "before the debugger attaches is missed.",
+                    logger: logger
+                )
+            }
+
+            return pid
+        } catch {
+            throw makeError(
+                "\(processControlError.localizedDescription) — CoreDevice app service: \(error.localizedDescription)",
+                code: processControlError.code
+            )
+        }
+    }
+
+    /// Launches through the CoreDevice app service.
+    ///
+    /// Never suspended: the service keeps a process it started with
+    /// `startStopped` inside its own debug session, and debugserver is then
+    /// refused when it tries to attach ("attach_response = E96").
+    private func launchAppViaAppService(
+        _ bundleID: String,
+        context: LaunchContext,
+        killExisting: Bool,
+        fallback: String
+    ) throws -> Int32 {
+        var appService: OpaquePointer?
+        if let ffiError = app_service_connect_rsd(context.adapter, context.handshake, &appService) {
+            throw error(from: ffiError, fallback: "Failed to connect app service")
+        }
+
+        guard let appService else {
+            throw makeError("App service handle was not created")
+        }
+
+        defer { app_service_free(appService) }
+
+        var response: UnsafeMutablePointer<LaunchResponseC>?
+        let ffiError = bundleID.withCString { bundleID in
+            app_service_launch_app(
+                appService,
+                bundleID,
+                nil,
+                0,
+                killExisting ? 1 : 0,
+                0,
+                nil,
+                &response
+            )
+        }
+
+        if let ffiError {
+            throw error(from: ffiError, fallback: fallback)
+        }
+
+        guard let response else {
+            throw makeError("Launch response was not created")
+        }
+
+        defer { app_service_free_launch_response(response) }
+        return Int32(bitPattern: response.pointee.pid)
     }
 
     func debugApp(withPID pid: Int32, logger: LogFunc?, jsCallback: DebugAppCallback?) -> Bool {
@@ -733,19 +995,16 @@ final class JITEnableContext {
 
     func launchAppWithoutDebug(_ bundleID: String, logger: LogFunc?) -> Bool {
         do {
-            let pid = try withConnectedRemoteServer { remoteServer in
-                try withProcessControl(remoteServer: remoteServer) { processControl in
-                    var pid: UInt64 = 0
-                    let ffiError = bundleID.withCString { bundleID in
-                        process_control_launch_app(processControl, bundleID, nil, 0, nil, 0, false, true, &pid)
-                    }
-
-                    if let ffiError {
-                        throw error(from: ffiError, fallback: "Failed to launch app")
-                    }
-
-                    return pid
-                }
+            let pid = try withConnectedRemoteServer { context in
+                try launchApp(
+                    bundleID,
+                    context: context,
+                    startSuspended: false,
+                    killExisting: true,
+                    environment: [],
+                    fallback: "Failed to launch app",
+                    logger: logger
+                )
             }
 
             emitLog("Launched app (PID \(pid))", logger: logger)
@@ -758,8 +1017,16 @@ final class JITEnableContext {
 
     func relaunchApp(_ bundleID: String, logger: LogFunc? = nil) -> Bool {
         do {
-            let pid = try withConnectedRemoteServer { remoteServer in
-                try relaunchApp(bundleID, remoteServer: remoteServer)
+            let pid = try withConnectedRemoteServer { context in
+                try launchApp(
+                    bundleID,
+                    context: context,
+                    startSuspended: false,
+                    killExisting: false,
+                    environment: [],
+                    fallback: "Failed to return to app",
+                    logger: logger
+                )
             }
 
             emitLog("Returned to \(bundleID) (PID \(pid))", logger: logger)
@@ -883,15 +1150,15 @@ final class JITEnableContext {
     private func runDebugSession(
         logger: LogFunc?,
         callback: DebugAppCallback?,
-        pidProvider: (OpaquePointer) throws -> Int32
+        pidProvider: (LaunchContext) throws -> Int32
     ) -> Bool {
         do {
-            try withConnectedDebugSession { remoteServer, debugProxy in
-                let pid = try pidProvider(remoteServer)
+            try withConnectedDebugSession { context, debugProxy in
+                let pid = try pidProvider(context)
                 runDebugServerCommand(
                     pid: pid,
                     debugProxy: debugProxy,
-                    remoteServer: remoteServer,
+                    remoteServer: context.remoteServer,
                     logger: logger,
                     callback: callback
                 )

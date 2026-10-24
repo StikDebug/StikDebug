@@ -97,7 +97,7 @@ final class TunnelManager: ObservableObject {
             return
         }
 
-        if error.code == -9 {
+        if error.code == PairingFileSanitizer.errorCode {
             handleInvalidPairingFile()
             return
         }
@@ -119,12 +119,12 @@ final class TunnelManager: ObservableObject {
 
         showAlert(
             title: "Invalid Pairing File",
-            message: "The pairing file may be invalid or expired. You can import a new pairing file to replace it.",
+            message: "The pairing file may be damaged, invalid, or expired. You can import a new pairing file to replace it.",
             showOk: true,
             showTryAgain: false,
             primaryButtonText: "Select New File"
         ) { _ in
-            NotificationCenter.default.post(name: NSNotification.Name("ShowPairingFilePicker"), object: nil)
+            NotificationCenter.default.post(name: .showPairingFilePicker, object: nil)
         }
     }
 

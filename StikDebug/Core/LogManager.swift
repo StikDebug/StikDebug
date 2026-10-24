@@ -18,6 +18,7 @@ final class LogManager: ObservableObject {
         let timestamp: Date
         let type: LogType
         let message: String
+        let origin: Origin
 
         enum LogType: String, Sendable {
             case info    = "INFO"
@@ -26,11 +27,19 @@ final class LogManager: ObservableObject {
             case warning = "WARNING"
         }
 
-        init(timestamp: Date, type: LogType, message: String) {
+        /// Where the entry came from. Reloading the idevice trace replaces only
+        /// its own entries, so what StikDebug reported stays put.
+        enum Origin: Sendable {
+            case app
+            case idevice
+        }
+
+        init(timestamp: Date, type: LogType, message: String, origin: Origin = .app) {
             self.id = UUID()
             self.timestamp = timestamp
             self.type = type
             self.message = message
+            self.origin = origin
         }
     }
 
@@ -63,24 +72,39 @@ final class LogManager: ObservableObject {
     func addDebugLog(_ message: String)   { addLog(message: message, type: .debug) }
     func addWarningLog(_ message: String) { addLog(message: message, type: .warning) }
 
-    func setLogs(_ entries: [LogEntry]) {
+    /// Replaces the entries read from `idevice_log.txt`, keeping everything
+    /// StikDebug logged itself.
+    func setIdeviceLogs(_ entries: [LogEntry]) {
         DispatchQueue.main.async {
-            self.logs = entries
-            self.errorCount = entries.filter { $0.type == .error }.count
+            let ownEntries = self.logs.filter { $0.origin == .app }
+            self.logs = (ownEntries + entries).sorted { $0.timestamp < $1.timestamp }
+            self.errorCount = self.logs.filter { $0.type == .error }.count
         }
     }
 
     func appendLogs(_ entries: [LogEntry], maxTotal: Int = 1000) {
         DispatchQueue.main.async {
             self.logs.append(contentsOf: entries)
-            self.errorCount += entries.filter { $0.type == .error }.count
-            if self.logs.count > maxTotal {
-                let excess = self.logs.count - maxTotal
-                let removed = self.logs.prefix(excess)
-                self.logs.removeFirst(excess)
-                let removedErrors = removed.filter { $0.type == .error }.count
-                self.errorCount = max(0, self.errorCount - removedErrors)
+
+            guard self.logs.count > maxTotal else { return }
+
+            // Trim the trace, never what StikDebug reported: the trace runs to
+            // hundreds of lines a second and would otherwise push out the few
+            // messages that say what went wrong.
+            var excess = self.logs.count - maxTotal
+            var kept: [LogEntry] = []
+            kept.reserveCapacity(maxTotal)
+
+            for entry in self.logs {
+                if excess > 0, entry.origin == .idevice {
+                    excess -= 1
+                    continue
+                }
+                kept.append(entry)
             }
+
+            self.logs = kept
+            self.errorCount = kept.filter { $0.type == .error }.count
         }
     }
 

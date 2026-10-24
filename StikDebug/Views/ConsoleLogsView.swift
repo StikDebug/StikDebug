@@ -23,6 +23,7 @@ struct ConsoleLogsView: View {
     @State private var isViewActive = false
     @State private var lastProcessedLineCount = 0
     @State private var isLoadingLogs = false
+    @State private var exportedLog: ExportedLogFile?
     @State private var jitIsAtBottom = true
     @State private var syslogIsAtBottom = true
     @State private var syslogSearchText = ""
@@ -105,6 +106,9 @@ struct ConsoleLogsView: View {
                 Button("Cancel", role: .cancel) { }
             } message: {
                 Text("Choose how quickly new relay entries appear.")
+            }
+            .sheet(item: $exportedLog) { export in
+                LogShareSheet(items: [export.url])
             }
         }
                 .onDisappear {
@@ -251,33 +255,74 @@ struct ConsoleLogsView: View {
     }
 
     private func copyJITLogs() {
-        var logsContent = "=== DEVICE INFORMATION ===\n"
-        logsContent += "Version: \(UIDevice.current.systemVersion)\n"
-        logsContent += "Name: \(UIDevice.current.name)\n"
-        logsContent += "Model: \(UIDevice.current.model)\n"
-        logsContent += "StikDebug Version: App Version: 1.0\n\n"
-        logsContent += "=== LOG ENTRIES ===\n"
-        logsContent += logManager.logs.map {
-            "[\(formatTime(date: $0.timestamp))] [\($0.type.rawValue)] \($0.message)"
-        }.joined(separator: "\n")
-        UIPasteboard.general.string = logsContent
+        UIPasteboard.general.string = appLogReport()
         presentAlert(title: "Logs Copied", message: "Logs have been copied to clipboard.")
+    }
+
+    /// The device header and StikDebug's own entries. This is the half that
+    /// names what went wrong; `idevice_log.txt` only holds the library trace.
+    private func appLogReport() -> String {
+        var report = "=== DEVICE INFORMATION ===\n"
+        report += "Version: \(UIDevice.current.systemVersion)\n"
+        report += "Name: \(UIDevice.current.name)\n"
+        report += "Model: \(UIDevice.current.model)\n"
+        report += "StikDebug Version: App Version: 1.0\n\n"
+        report += "=== LOG ENTRIES ===\n"
+        let ownEntries = logManager.logs.filter { $0.origin == .app }
+        report += ownEntries.isEmpty
+            ? "(StikDebug logged nothing in this session)"
+            : ownEntries.map {
+                "[\(formatTime(date: $0.timestamp))] [\($0.type.rawValue)] \($0.message)"
+            }.joined(separator: "\n")
+        return report
     }
 
     @ViewBuilder
     private var exportMenuOption: some View {
-        let logURL = IdeviceLogFileManager.logURL
-        if FileManager.default.fileExists(atPath: logURL.path) {
-            ShareLink(
-                item: logURL,
-                preview: SharePreview("idevice_log.txt", image: Image(systemName: "doc.text"))
-            ) {
-                Label("Export Logs", systemImage: "square.and.arrow.up")
+        Button("Export Logs", systemImage: "square.and.arrow.up") {
+            exportLogs()
+        }
+    }
+
+    /// Exports both halves in one file. Sharing only the library trace leaves
+    /// out every message that says what actually failed.
+    private func exportLogs() {
+        let ideviceLogURL = IdeviceLogFileManager.logURL
+        let hasIdeviceLog = FileManager.default.fileExists(atPath: ideviceLogURL.path)
+
+        guard hasIdeviceLog || !logManager.logs.isEmpty else {
+            presentAlert(title: "Export Failed", message: "No logs found")
+            return
+        }
+
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent("stikdebug_logs.txt")
+
+        do {
+            let header = appLogReport() + "\n\n=== IDEVICE LOG ===\n"
+            try header.write(to: destination, atomically: true, encoding: .utf8)
+
+            if hasIdeviceLog {
+                try append(contentsOf: ideviceLogURL, to: destination)
             }
-        } else {
-            Button("Export Logs", systemImage: "square.and.arrow.up") {
-                presentAlert(title: "Export Failed", message: "No idevice logs found")
-            }
+
+            exportedLog = ExportedLogFile(url: destination)
+        } catch {
+            presentAlert(title: "Export Failed", message: error.localizedDescription)
+        }
+    }
+
+    /// Copies in chunks: the library trace is allowed to grow to 20 MB.
+    private func append(contentsOf sourceURL: URL, to destinationURL: URL) throws {
+        let source = try FileHandle(forReadingFrom: sourceURL)
+        defer { try? source.close() }
+
+        let destination = try FileHandle(forWritingTo: destinationURL)
+        defer { try? destination.close() }
+
+        try destination.seekToEnd()
+        while let chunk = try source.read(upToCount: 1 << 20), !chunk.isEmpty {
+            try destination.write(contentsOf: chunk)
         }
     }
     
@@ -341,7 +386,7 @@ struct ConsoleLogsView: View {
         await MainActor.run {
             if let (entries, lineCount) = result {
                 lastProcessedLineCount = lineCount
-                logManager.setLogs(entries)
+                logManager.setIdeviceLogs(entries)
                 if jitIsAtBottom, let last = logManager.logs.last {
                     jitScrollView?.scrollTo(last.id, anchor: .bottom)
                 }
@@ -472,14 +517,53 @@ struct ConsoleLogsView: View {
 
     nonisolated private static func parseAppLogEntries<S: Sequence>(from lines: S, skipPrefixes: [String] = []) -> [LogManager.LogEntry] where S.Element == String {
         var parsed: [LogManager.LogEntry] = []
+        var lastTimestamp = Date()
         parsed.reserveCapacity(lines.underestimatedCount)
 
         for line in lines {
             if line.isEmpty { continue }
             if skipPrefixes.contains(where: { line.contains($0) }) { continue }
-            parsed.append(LogManager.LogEntry(timestamp: Date(), type: Self.logType(for: line), message: line))
+
+            // Continuation lines of a multi-line dump carry no stamp of their
+            // own, so they keep the one from the line that opened it.
+            if let stamp = Self.traceTimestamp(in: line) {
+                lastTimestamp = stamp
+            }
+
+            parsed.append(
+                LogManager.LogEntry(
+                    timestamp: lastTimestamp,
+                    type: Self.logType(for: line),
+                    message: line,
+                    origin: .idevice
+                )
+            )
         }
         return parsed
+    }
+
+    private static let traceTimestampFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    /// Trace lines open with `2026-10-24T10:10:41.452332Z`. The parser reads
+    /// milliseconds at most, so the rest of the fraction is dropped.
+    nonisolated private static func traceTimestamp(in line: String) -> Date? {
+        guard let field = line.split(separator: " ", maxSplits: 1).first,
+              field.hasSuffix("Z"),
+              field.contains("T") else {
+            return nil
+        }
+
+        let withoutZone = field.dropLast()
+        let parts = withoutZone.split(separator: ".", maxSplits: 1)
+        let text = parts.count == 2
+            ? "\(parts[0]).\(parts[1].prefix(3))Z"
+            : "\(withoutZone)Z"
+
+        return traceTimestampFormatter.date(from: text)
     }
 
 }
@@ -489,6 +573,21 @@ struct ConsoleLogsView_Previews: PreviewProvider {
     static var previews: some View {
         ConsoleLogsView()
     }
+}
+
+private struct ExportedLogFile: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
+private struct LogShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) { }
 }
 
 private struct AppLogRow: View, Equatable {
