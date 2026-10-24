@@ -250,6 +250,58 @@ private enum IdeviceBridge {
         return result
     }
 
+    struct InstalledAppMatch {
+        let bundleID: String
+        let name: String
+        let hasGetTaskAllow: Bool
+    }
+
+    /// The installed app a process belongs to, matched by the bundle directory
+    /// its executable sits in, together with whether it can be debugged.
+    static func installedApp(
+        forExecutablePath executablePath: String,
+        adapter: OpaquePointer,
+        handshake: OpaquePointer
+    ) throws -> InstalledAppMatch? {
+        try installedApp(adapter: adapter, handshake: handshake) { dictionary in
+            guard let path = dictionary["Path"] as? String, !path.isEmpty else { return false }
+            return executablePath == path || executablePath.hasPrefix(path + "/")
+        }
+    }
+
+    static func installedApp(
+        forBundleID bundleID: String,
+        adapter: OpaquePointer,
+        handshake: OpaquePointer
+    ) throws -> InstalledAppMatch? {
+        try installedApp(adapter: adapter, handshake: handshake) { dictionary in
+            dictionary["CFBundleIdentifier"] as? String == bundleID
+        }
+    }
+
+    private static func installedApp(
+        adapter: OpaquePointer,
+        handshake: OpaquePointer,
+        matching isMatch: ([String: Any]) -> Bool
+    ) throws -> InstalledAppMatch? {
+        let dictionaries = try plistDictionaries(adapter: adapter, handshake: handshake)
+
+        for dictionary in dictionaries {
+            guard let bundleID = dictionary["CFBundleIdentifier"] as? String, !bundleID.isEmpty,
+                  isMatch(dictionary) else {
+                continue
+            }
+
+            return InstalledAppMatch(
+                bundleID: bundleID,
+                name: appName(from: dictionary),
+                hasGetTaskAllow: hasGetTaskAllow(dictionary)
+            )
+        }
+
+        return nil
+    }
+
     static func activeTunnelHandles(for context: JITEnableContext) throws -> (adapter: OpaquePointer, handshake: OpaquePointer) {
         try context.ensureTunnel()
 

@@ -840,7 +840,12 @@ final class JITEnableContext {
     }
 
     func debugApp(withBundleID bundleID: String, logger: LogFunc?, jsCallback: DebugAppCallback?) -> Bool {
-        runDebugSession(logger: logger, callback: jsCallback) { context in
+        if let refusal = undebuggableBundleMessage(bundleID: bundleID) {
+            emitLog(refusal, logger: logger)
+            return false
+        }
+
+        return runDebugSession(logger: logger, callback: jsCallback) { context in
             try launchApp(
                 bundleID,
                 context: context,
@@ -990,7 +995,59 @@ final class JITEnableContext {
     }
 
     func debugApp(withPID pid: Int32, logger: LogFunc?, jsCallback: DebugAppCallback?) -> Bool {
-        runDebugSession(logger: logger, callback: jsCallback) { _ in pid }
+        if let refusal = undebuggableProcessMessage(pid: pid) {
+            emitLog(refusal, logger: logger)
+            return false
+        }
+
+        return runDebugSession(logger: logger, callback: jsCallback) { _ in pid }
+    }
+
+    /// debugserver turns down an attach to an app that is not signed for
+    /// debugging, and answers with a bare "E96" that explains nothing. The
+    /// entitlement is already known here, so the refusal is reported with its
+    /// reason instead. Returns nil when the attach is worth attempting.
+    private func undebuggableProcessMessage(pid: Int32) -> String? {
+        guard let process = ProcessInfoEntry.currentEntries().first(where: { $0.pid == Int(pid) }) else {
+            return nil
+        }
+
+        return undebuggableAppMessage { adapter, handshake in
+            try IdeviceBridge.installedApp(
+                forExecutablePath: process.executablePath,
+                adapter: adapter,
+                handshake: handshake
+            )
+        }
+    }
+
+    private func undebuggableBundleMessage(bundleID: String) -> String? {
+        undebuggableAppMessage { adapter, handshake in
+            try IdeviceBridge.installedApp(
+                forBundleID: bundleID,
+                adapter: adapter,
+                handshake: handshake
+            )
+        }
+    }
+
+    /// An app that cannot be matched is left alone: only a known-undebuggable
+    /// one is turned down.
+    private func undebuggableAppMessage(
+        _ lookup: (OpaquePointer, OpaquePointer) throws -> IdeviceBridge.InstalledAppMatch?
+    ) -> String? {
+        let match = try? IdeviceBridge.withTunnelHandles(for: self) { adapter, handshake in
+            try lookup(adapter, handshake)
+        }
+
+        guard let app = match ?? nil, !app.hasGetTaskAllow else {
+            return nil
+        }
+
+        return "Error: \(app.name) (\(app.bundleID)) is not signed with the get-task-allow entitlement, "
+            + "so the debugger cannot attach to it and JIT cannot be enabled. Sign it with a certificate "
+            + "whose provisioning profile allows get-task-allow — that means a development profile; "
+            + "distribution and enterprise profiles switch the entitlement off."
     }
 
     func launchAppWithoutDebug(_ bundleID: String, logger: LogFunc?) -> Bool {
