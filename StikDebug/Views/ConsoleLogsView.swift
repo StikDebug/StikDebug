@@ -268,9 +268,12 @@ struct ConsoleLogsView: View {
         report += "Model: \(UIDevice.current.model)\n"
         report += "StikDebug Version: App Version: 1.0\n\n"
         report += "=== LOG ENTRIES ===\n"
-        report += logManager.logs.map {
-            "[\(formatTime(date: $0.timestamp))] [\($0.type.rawValue)] \($0.message)"
-        }.joined(separator: "\n")
+        let ownEntries = logManager.logs.filter { $0.origin == .app }
+        report += ownEntries.isEmpty
+            ? "(StikDebug logged nothing in this session)"
+            : ownEntries.map {
+                "[\(formatTime(date: $0.timestamp))] [\($0.type.rawValue)] \($0.message)"
+            }.joined(separator: "\n")
         return report
     }
 
@@ -383,7 +386,7 @@ struct ConsoleLogsView: View {
         await MainActor.run {
             if let (entries, lineCount) = result {
                 lastProcessedLineCount = lineCount
-                logManager.setLogs(entries)
+                logManager.setIdeviceLogs(entries)
                 if jitIsAtBottom, let last = logManager.logs.last {
                     jitScrollView?.scrollTo(last.id, anchor: .bottom)
                 }
@@ -514,14 +517,53 @@ struct ConsoleLogsView: View {
 
     nonisolated private static func parseAppLogEntries<S: Sequence>(from lines: S, skipPrefixes: [String] = []) -> [LogManager.LogEntry] where S.Element == String {
         var parsed: [LogManager.LogEntry] = []
+        var lastTimestamp = Date()
         parsed.reserveCapacity(lines.underestimatedCount)
 
         for line in lines {
             if line.isEmpty { continue }
             if skipPrefixes.contains(where: { line.contains($0) }) { continue }
-            parsed.append(LogManager.LogEntry(timestamp: Date(), type: Self.logType(for: line), message: line))
+
+            // Continuation lines of a multi-line dump carry no stamp of their
+            // own, so they keep the one from the line that opened it.
+            if let stamp = Self.traceTimestamp(in: line) {
+                lastTimestamp = stamp
+            }
+
+            parsed.append(
+                LogManager.LogEntry(
+                    timestamp: lastTimestamp,
+                    type: Self.logType(for: line),
+                    message: line,
+                    origin: .idevice
+                )
+            )
         }
         return parsed
+    }
+
+    private static let traceTimestampFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    /// Trace lines open with `2026-10-24T10:10:41.452332Z`. The parser reads
+    /// milliseconds at most, so the rest of the fraction is dropped.
+    nonisolated private static func traceTimestamp(in line: String) -> Date? {
+        guard let field = line.split(separator: " ", maxSplits: 1).first,
+              field.hasSuffix("Z"),
+              field.contains("T") else {
+            return nil
+        }
+
+        let withoutZone = field.dropLast()
+        let parts = withoutZone.split(separator: ".", maxSplits: 1)
+        let text = parts.count == 2
+            ? "\(parts[0]).\(parts[1].prefix(3))Z"
+            : "\(withoutZone)Z"
+
+        return traceTimestampFormatter.date(from: text)
     }
 
 }
