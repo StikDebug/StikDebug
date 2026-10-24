@@ -429,10 +429,11 @@ struct HomeView: View {
             }
 
             var lastDebugMessage: String?
+            // emitLog already records every message with its own type; logging
+            // it again here produced a duplicate INFO copy of each line.
             let logger: LogFunc = { message in
                 if let message {
                     lastDebugMessage = message
-                    LogManager.shared.addInfoLog(message)
                 }
             }
             var success: Bool

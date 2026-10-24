@@ -85,14 +85,26 @@ final class LogManager: ObservableObject {
     func appendLogs(_ entries: [LogEntry], maxTotal: Int = 1000) {
         DispatchQueue.main.async {
             self.logs.append(contentsOf: entries)
-            self.errorCount += entries.filter { $0.type == .error }.count
-            if self.logs.count > maxTotal {
-                let excess = self.logs.count - maxTotal
-                let removed = self.logs.prefix(excess)
-                self.logs.removeFirst(excess)
-                let removedErrors = removed.filter { $0.type == .error }.count
-                self.errorCount = max(0, self.errorCount - removedErrors)
+
+            guard self.logs.count > maxTotal else { return }
+
+            // Trim the trace, never what StikDebug reported: the trace runs to
+            // hundreds of lines a second and would otherwise push out the few
+            // messages that say what went wrong.
+            var excess = self.logs.count - maxTotal
+            var kept: [LogEntry] = []
+            kept.reserveCapacity(maxTotal)
+
+            for entry in self.logs {
+                if excess > 0, entry.origin == .idevice {
+                    excess -= 1
+                    continue
+                }
+                kept.append(entry)
             }
+
+            self.logs = kept
+            self.errorCount = kept.filter { $0.type == .error }.count
         }
     }
 

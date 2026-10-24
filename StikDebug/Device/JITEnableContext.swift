@@ -433,6 +433,24 @@ final class JITEnableContext {
     private final class DebugHeartbeatKeepAlive {
         private static let defaultInterval: UInt64 = 2
         private static let maxInterval: UInt64 = 3
+        private static let maximumConsecutiveFailures = 3
+        private static let retryDelay: TimeInterval = 1
+
+        /// Markers for a connection that is gone for good. `heartbeat_get_marco`
+        /// returns at once on one of these instead of blocking for the
+        /// interval, so retrying spins the loop as fast as the CPU allows.
+        private static let lostConnectionMarkers = [
+            "BrokenPipe",
+            "NotConnected",
+            "channel closed",
+            "ConnectionReset",
+            "ConnectionAborted",
+            "UnexpectedEof"
+        ]
+
+        private static func describesLostConnection(_ description: String) -> Bool {
+            lostConnectionMarkers.contains { description.localizedCaseInsensitiveContains($0) }
+        }
 
         private let queue = DispatchQueue(label: "com.stikdebug.debug-heartbeat", qos: .utility)
         private let stateLock = NSLock()
@@ -513,6 +531,7 @@ final class JITEnableContext {
             startupSemaphore.signal()
 
             var interval = Self.defaultInterval
+            var consecutiveFailures = 0
 
             while !shouldStop(), let client {
                 var suggestedInterval: UInt64 = 0
@@ -528,6 +547,7 @@ final class JITEnableContext {
 
                     if description.contains("HeartbeatTimeout") {
                         interval = Self.defaultInterval
+                        consecutiveFailures = 0
                         continue
                     }
 
@@ -536,11 +556,31 @@ final class JITEnableContext {
                         break
                     }
 
-                    log("Debug heartbeat warning: \(description)")
+                    if Self.describesLostConnection(description) {
+                        log("Debug heartbeat stopped, the connection is gone: \(description)")
+                        break
+                    }
+
+                    consecutiveFailures += 1
+
+                    // Only the first of a run is worth a line: repeating it
+                    // drowns every other message in the console.
+                    if consecutiveFailures == 1 {
+                        log("Debug heartbeat warning: \(description)")
+                    }
+
+                    if consecutiveFailures >= Self.maximumConsecutiveFailures {
+                        log("Debug heartbeat stopped after \(consecutiveFailures) failures: \(description)")
+                        break
+                    }
+
+                    // Never retry faster than the heartbeat interval itself.
+                    Thread.sleep(forTimeInterval: Self.retryDelay)
                     interval = Self.defaultInterval
                     continue
                 }
 
+                consecutiveFailures = 0
                 interval = min(max(suggestedInterval, 1), Self.maxInterval)
 
                 if let ffiError = heartbeat_send_polo(client) {
@@ -621,7 +661,10 @@ final class JITEnableContext {
 
     private func connectHeartbeatKeepAlive(logger: LogFunc?) throws -> DebugHeartbeatKeepAlive {
         return DebugHeartbeatKeepAlive(
-            logger: logger,
+            logger: { [weak self] message in
+                guard let message else { return }
+                self?.emitLog(message, logger: logger)
+            },
             makeClient: { [weak self] in
                 guard let self else {
                     throw NSError(
@@ -840,11 +883,20 @@ final class JITEnableContext {
             let pid = try launchAppViaAppService(
                 bundleID,
                 context: context,
-                startSuspended: startSuspended,
                 killExisting: killExisting,
                 fallback: fallback
             )
             emitLog("CoreDevice app service launched \(bundleID) (PID \(pid))", logger: logger)
+
+            if startSuspended {
+                emitLog(
+                    "Warning: \(bundleID) is running rather than held at its entry point, because a process the "
+                        + "CoreDevice app service holds suspended cannot be attached to. Anything the app does "
+                        + "before the debugger attaches is missed.",
+                    logger: logger
+                )
+            }
+
             return pid
         } catch {
             throw makeError(
@@ -854,10 +906,14 @@ final class JITEnableContext {
         }
     }
 
+    /// Launches through the CoreDevice app service.
+    ///
+    /// Never suspended: the service keeps a process it started with
+    /// `startStopped` inside its own debug session, and debugserver is then
+    /// refused when it tries to attach ("attach_response = E96").
     private func launchAppViaAppService(
         _ bundleID: String,
         context: LaunchContext,
-        startSuspended: Bool,
         killExisting: Bool,
         fallback: String
     ) throws -> Int32 {
@@ -880,7 +936,7 @@ final class JITEnableContext {
                 nil,
                 0,
                 killExisting ? 1 : 0,
-                startSuspended ? 1 : 0,
+                0,
                 nil,
                 &response
             )
