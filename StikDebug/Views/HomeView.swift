@@ -181,15 +181,15 @@ struct HomeView: View {
                 AlertPresenter.dismissPresentedAlert()
             } catch {
                 LogManager.shared.addErrorLog("Failed to import pairing file: \(error.localizedDescription)")
-                showImportFailure(error.localizedDescription)
+                showFailureFeedback(error.localizedDescription)
             }
         case .failure(let error):
             LogManager.shared.addErrorLog("Pairing file picker failed: \(error.localizedDescription)")
-            showImportFailure(error.localizedDescription)
+            showFailureFeedback(error.localizedDescription)
         }
     }
 
-    private func showImportFailure(_ message: String) {
+    private func showFailureFeedback(_ message: String) {
         let feedback = DebugFeedback(message: message, isError: true, isWorking: false)
         withAnimation {
             debugFeedback = feedback
@@ -244,7 +244,12 @@ struct HomeView: View {
                         config.scriptData = namedScript.data
                         config.scriptName = namedScript.name
                     } else {
-                        LogManager.shared.addWarningLog("Script \(scriptName) was not found in the scripts folder")
+                        // Attaching without the script that was asked for looks
+                        // like a working JIT run and is not one, so stop here.
+                        let message = "Script \(scriptName) was not found in the scripts folder"
+                        LogManager.shared.addWarningLog(message)
+                        showFailureFeedback(message)
+                        return
                     }
                 }
             }
