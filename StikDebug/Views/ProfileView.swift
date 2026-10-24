@@ -339,7 +339,7 @@ struct ProfileView: View {
                         match.profile.allowsDebugging
                             ? "Debugging allowed (get-task-allow)"
                             : "No debugging — JIT is not possible with this profile",
-                        systemImage: match.profile.allowsDebugging ? "ladybug" : "ladybug.slash"
+                        systemImage: match.profile.allowsDebugging ? "checkmark.circle" : "xmark.circle"
                     )
                     .font(.caption)
                     .foregroundStyle(match.profile.allowsDebugging ? Color.green : Color.refreshRed)
