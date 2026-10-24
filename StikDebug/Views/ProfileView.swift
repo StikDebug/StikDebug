@@ -17,6 +17,10 @@ class Profile: ObservableObject {
     let data: Data
     @Published var appName: String = "unknown"
     @Published var appId: String = "unknown"
+    /// Whether the profile lets apps signed with it be debugged. Development
+    /// profiles grant it; distribution and enterprise ones do not, and JIT is
+    /// impossible without it.
+    @Published var allowsDebugging: Bool = false
     @Published var uuid: String
     @Published var expirationDate: Date? = nil
     @Published var plistDict: [String:Any]? = nil
@@ -32,6 +36,11 @@ class Profile: ObservableObject {
                 self.appName = plistDict["AppIDName"] as? String ?? "unknown"
                 if let entitlementsDict = plistDict["Entitlements"] as? [String:Any] {
                     self.appId = entitlementsDict["application-identifier"] as? String ?? "unknown"
+                    if let flag = entitlementsDict["get-task-allow"] as? Bool {
+                        self.allowsDebugging = flag
+                    } else if let flag = entitlementsDict["get-task-allow"] as? NSNumber {
+                        self.allowsDebugging = flag.boolValue
+                    }
                 }
                 self.expirationDate = plistDict["ExpirationDate"] as? Date
                 self.uuid = plistDict["UUID"] as? String ?? UUID().uuidString
@@ -326,6 +335,14 @@ struct ProfileView: View {
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
+                    Label(
+                        match.profile.allowsDebugging
+                            ? "Debugging allowed (get-task-allow)"
+                            : "No debugging — JIT is not possible with this profile",
+                        systemImage: match.profile.allowsDebugging ? "ladybug" : "ladybug.slash"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(match.profile.allowsDebugging ? Color.green : Color.refreshRed)
                 }
                 Spacer()
                 HStack(spacing: 16) {
