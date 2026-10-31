@@ -4,6 +4,7 @@
 //
 
 import Foundation
+import UIKit
 
 final class TunnelManager: ObservableObject {
     static let shared = TunnelManager()
@@ -125,7 +126,7 @@ final class TunnelManager: ObservableObject {
 
         showAlert(
             title: "Invalid Pairing File",
-            message: "The pairing file may be invalid or expired. You can import a new pairing file to replace it.",
+            message: "The pairing file may be invalid or expired. You can import a new pairing file to replace it.\n\n\(connectionDiagnosticDetails())",
             showOk: true,
             showTryAgain: false,
             primaryButtonText: "Select New File"
@@ -157,14 +158,38 @@ private func tunnelConnectionLogMessage(for error: NSError) -> String {
 }
 
 private func tunnelConnectionAlertMessage(for error: NSError) -> String {
-    """
+    let pairingInstructions: String
+    if #available(iOS 27.0, *) {
+        pairingInstructions = "Generate and place a fresh pairing file using the built-in pairing menu in Settings or iloader."
+    } else {
+        pairingInstructions = "Generate and place a fresh pairing file using iloader."
+    }
+
+    return """
     Code \(error.code): \(error.localizedDescription)
 
     Troubleshooting:
     1. Make sure Wi-Fi is connected or Cellular Data is disabled, and LocalDevVPN is enabled.
     2. Restart your iPhone or iPad, then re-enable LocalDevVPN and try again.
-    3. Generate and place a fresh pairing file using iloader.
+    3. \(pairingInstructions)
 
     Target attempted: \(RemotePairingPortResolver.lastAttemptDescription)
+
+    \(connectionDiagnosticDetails())
+    """
+}
+
+func connectionDiagnosticDetails() -> String {
+    let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
+    var systemInfo = utsname()
+    uname(&systemInfo)
+    let model = withUnsafePointer(to: &systemInfo.machine) {
+        $0.withMemoryRebound(to: CChar.self, capacity: 1) { String(cString: $0) }
+    }
+
+    return """
+    \(version)
+    \(UIDevice.current.systemName) \(UIDevice.current.systemVersion)
+    \(DeviceModelName.name(for: model))
     """
 }
