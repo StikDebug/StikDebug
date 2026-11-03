@@ -86,6 +86,12 @@ StikDebug enables **JIT** for sideloaded apps on iOS 17.4+ without needing a com
 (Add images to a /screenshots/ folder in the repo and uncomment when ready.)
 -->
 
+## Kill a Process by URL
+
+Use `stikdebug://kill-process?name=ProcessName` to terminate a running process by its exact, case-sensitive executable name, not its bundle ID. For example: `stikdebug://kill-process?name=LiveContainer`. Percent-encode names containing spaces or other special characters.
+
+StikDebug asks for confirmation, then looks up the current PID before terminating the process. If several processes have the same name, use `stikdebug://kill-process?pid=1234` to select one. When both parameters are provided, `pid` takes precedence.
+
 ## Building from Source
 
 > [!IMPORTANT]

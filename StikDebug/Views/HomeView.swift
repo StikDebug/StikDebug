@@ -274,8 +274,12 @@ struct HomeView: View {
                 performExternalURLAction(action)
             }
         case "kill-process":
-            if let pidStr = queryValue(["pid"], in: components), let pid = Int(pidStr) {
-                pendingExternalURLAction = .killProcess(pid)
+            if let pidStr = queryValue(["pid"], in: components) {
+                if let pid = Int32(pidStr), pid > 0 {
+                    pendingExternalURLAction = .killProcess(.pid(pid))
+                }
+            } else if let name = queryValue(["name", "process-name", "processName", "process_name"], in: components) {
+                pendingExternalURLAction = .killProcess(.name(name))
             }
         case "launch-app":
             if let bundleId = queryValue(["bundle-id", "bundleID", "bundle_id", "bundleId"], in: components) {
@@ -300,19 +304,25 @@ struct HomeView: View {
             } else {
                 pendingJITEnableConfiguration = config
             }
-        case .killProcess(let pid):
+        case .killProcess(let target):
             markTunnelDisconnected()
             startTunnelInBackground(showErrorUI: false)
             DispatchQueue.global(qos: .userInitiated).async {
                 sleep(1)
                 do {
-                    try JITEnableContext.shared.killProcess(withPID: Int32(pid))
+                    switch target {
+                    case .pid(let pid):
+                        try JITEnableContext.shared.killProcess(withPID: pid)
+                    case .name(let name):
+                        try JITEnableContext.shared.killProcess(withName: name)
+                    }
                     DispatchQueue.main.async {
-                        LogManager.shared.addInfoLog("Killed process \(pid) via URL scheme")
+                        LogManager.shared.addInfoLog("Killed process \(target.description) via URL scheme")
                     }
                 } catch {
                     DispatchQueue.main.async {
-                        LogManager.shared.addErrorLog("Failed to kill process \(pid): \(error.localizedDescription)")
+                        LogManager.shared.addErrorLog("Failed to kill process \(target.description): \(error.localizedDescription)")
+                        showAlert(title: "Failed to Kill Process", message: error.localizedDescription, showOk: true)
                     }
                 }
             }

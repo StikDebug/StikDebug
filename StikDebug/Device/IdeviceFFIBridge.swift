@@ -549,6 +549,12 @@ extension JITEnableContext {
         try sendSignal(Int32(SIGKILL), toProcessWithPID: pid)
     }
 
+    func killProcess(withName name: String) throws {
+        let entries = try fetchProcessList().compactMap(ProcessInfoEntry.init(dictionary:))
+        let pid = try ProcessInfoEntry.pid(named: name, in: entries)
+        try killProcess(withPID: pid)
+    }
+
     func getAppList() throws -> [String: String] {
         try IdeviceBridge.withTunnelHandles(for: self) { adapter, handshake in
             try IdeviceBridge.appDictionary(
@@ -691,6 +697,27 @@ struct ProcessInfoEntry: Identifiable {
     static func currentEntries(_ error: NSErrorPointer = nil) -> [ProcessInfoEntry] {
         let entries = FetchDeviceProcessList(error) ?? []
         return entries.compactMap(Self.init(dictionary:))
+    }
+
+    static func pid(named name: String, in entries: [ProcessInfoEntry]) throws -> Int32 {
+        guard !name.isEmpty else {
+            throw IdeviceBridge.makeError(message: "A process name is required.")
+        }
+        let matches = entries.filter { $0.processName == name }
+        guard let match = matches.first else {
+            throw IdeviceBridge.makeError(message: "No running process named \(name) was found.")
+        }
+        guard matches.count == 1 else {
+            throw IdeviceBridge.makeError(message: "More than one process is named \(name). Use a PID to select the process.")
+        }
+        guard let pid = Int32(exactly: match.pid), pid > 0 else {
+            throw IdeviceBridge.makeError(message: "The process has an invalid PID.")
+        }
+        return pid
+    }
+
+    var processName: String {
+        URL(string: rawPath)?.lastPathComponent ?? (executablePath as NSString).lastPathComponent
     }
 
     var id: Int { pid }

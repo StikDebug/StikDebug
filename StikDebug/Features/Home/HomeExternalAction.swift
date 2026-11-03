@@ -13,17 +13,29 @@ struct JITEnableConfiguration {
     var scriptName: String?
 }
 
+enum ProcessKillTarget {
+    case pid(Int32)
+    case name(String)
+
+    var description: String {
+        switch self {
+        case .pid(let pid): return String(pid)
+        case .name(let name): return name
+        }
+    }
+}
+
 enum HomeExternalAction: Identifiable {
     case enableJIT(JITEnableConfiguration)
-    case killProcess(Int)
+    case killProcess(ProcessKillTarget)
     case launchApp(String)
 
     var id: String {
         switch self {
         case .enableJIT(let configuration):
             return "enable-\(configuration.bundleID ?? "")-\(configuration.pid ?? 0)-\(configuration.scriptName ?? "")"
-        case .killProcess(let pid):
-            return "kill-\(pid)"
+        case .killProcess(let target):
+            return "kill-\(target)"
         case .launchApp(let bundleID):
             return "launch-\(bundleID)"
         }
@@ -45,8 +57,8 @@ enum HomeExternalAction: Identifiable {
         case .enableJIT(let configuration):
             let scriptText = configuration.scriptData == nil ? "" : " and run a script"
             return "An external link wants to enable JIT\(scriptText) for \(targetDescription(for: configuration))."
-        case .killProcess(let pid):
-            return "An external link wants to kill process \(pid)."
+        case .killProcess(let target):
+            return "An external link wants to kill process \(target.description)."
         case .launchApp(let bundleID):
             return "An external link wants to launch \(bundleID)."
         }
