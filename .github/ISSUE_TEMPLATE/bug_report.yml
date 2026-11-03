@@ -15,6 +15,14 @@ body:
     validations:
       required: true
   - type: textarea
+    id: affected-app
+    attributes:
+      label: JIT - Affected App and IPA Source
+      description: If the issue involves enabling JIT for a particular app, name the app and tell us where you obtained its IPA. Include a download page or repository link if available.
+      placeholder: |
+        App name and version:
+        IPA source or link:
+  - type: textarea
     id: steps
     attributes:
       label: Steps to Reproduce
@@ -35,7 +43,7 @@ body:
   - type: input
     id: ios-version
     attributes:
-      label: iOS Version
+      label: iOS / iPadOS Version
       placeholder: e.g. 18.3.1
     validations:
       required: true
@@ -51,6 +59,15 @@ body:
     attributes:
       label: StikDebug Version
       placeholder: e.g. 1.0.0
+    validations:
+      required: true
+  - type: dropdown
+    id: livecontainer
+    attributes:
+      label: Are you running StikDebug inside LiveContainer?
+      options:
+        - "Yes"
+        - "No"
     validations:
       required: true
   - type: textarea
