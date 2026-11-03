@@ -94,7 +94,7 @@ StikDebug enables **JIT** for sideloaded apps on iOS 17.4+ without needing a com
 
 ### Requirements
 - macOS (latest recommended)
-- Xcode 16+ (Xcode 26+ preferred for iOS 26+ support)
+- Xcode 27 or later (required for the new `.xcproj` project format)
 - iOS device on iOS 17.4+ (for testing)
 - Git
 - Basic Xcode/Swift knowledge
