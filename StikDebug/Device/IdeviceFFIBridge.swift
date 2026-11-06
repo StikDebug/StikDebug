@@ -907,6 +907,9 @@ func simulate_location(_ deviceIP: String, _ latitude: Double, _ longitude: Doub
         return LocationSimulationStatus.locationSet
     }
 
+    let conditions = deviceIP == DeviceConnectionContext.defaultTargetIPAddress ? ConnectionDiagnostics.networkConditions() : nil
+    let notice = ConnectionDiagnostics.connectedNotice(targetIP: deviceIP, conditions: conditions)
+    NotificationCenter.default.post(name: .locationTunnelConnected, object: notice)
     return LocationSimulationStatus.ok
 }
 

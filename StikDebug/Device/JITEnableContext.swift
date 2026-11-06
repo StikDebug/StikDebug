@@ -51,12 +51,24 @@ final class RemotePairingPortResolver {
             NSLog("[StikDebug] Ignoring invalid manual Remote Pairing port: %@", override)
         }
 
-        let result = discover(timeout: timeout)
+        let result = discover(targetIPAddress: targetIPAddress, timeout: timeout)
         record(targetIPAddress: targetIPAddress, port: result.port, source: result.source)
         return result.port
     }
 
-    static func discover(timeout: TimeInterval = 5) -> (port: UInt16, source: String) {
+    static func discover(targetIPAddress: String = DeviceConnectionContext.targetIPAddress, timeout: TimeInterval = 5) -> (port: UInt16, source: String) {
+        if targetIPAddress != DeviceConnectionContext.defaultTargetIPAddress {
+            var peer = sockaddr_in()
+            peer.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+            peer.sin_family = UInt8(AF_INET)
+            guard targetIPAddress.withCString({ inet_pton(AF_INET, $0, &peer.sin_addr) }) == 1 else { return (fallback, "Fallback") }
+            let address = withUnsafeBytes(of: &peer) { Data($0) }
+            guard let resolved = try? PairedDeviceDiscovery(address: address).resolve(timeout: timeout),
+                  resolved.count == MemoryLayout<sockaddr_in>.size else { return (fallback, "Fallback") }
+            withUnsafeMutableBytes(of: &peer) { _ = resolved.copyBytes(to: $0) }
+            let port = UInt16(bigEndian: peer.sin_port)
+            return port == 0 ? (fallback, "Fallback") : (port, "Bonjour")
+        }
         let worker = RemotePairingPortResolver()
         worker.discoveryQueue.async {
             worker.startDiscovery()
@@ -373,21 +385,30 @@ final class JITEnableContext {
     }
 
     private func createTunnel(hostname: String, target: PairingPlacementTarget? = nil) throws -> TunnelHandles {
-        let pairingFile = try getPairingFile(at: target?.pairingFileURL)
+        let deviceIP = target.flatMap { PairedDeviceDiscovery.numericHost($0.address) } ?? DeviceConnectionContext.targetIPAddress
+        let pairingFile: OpaquePointer
+        do {
+            pairingFile = try getPairingFile(at: target?.pairingFileURL)
+        } catch {
+            throw ConnectionDiagnostics.annotate(error as NSError, stage: .pairingFile, targetIP: deviceIP)
+        }
         defer { rp_pairing_file_free(pairingFile) }
 
+        var remotePairingPort: UInt16?
         let address: Data
         if let target {
             address = try PairedDeviceDiscovery(address: target.address).resolve()
         } else {
             var addr = sockaddr_in()
+            addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
             addr.sin_family = sa_family_t(AF_INET)
-            let deviceIP = DeviceConnectionContext.targetIPAddress
-            addr.sin_port = in_port_t(RemotePairingPortResolver.resolve(targetIPAddress: deviceIP)).bigEndian
             let parseResult = deviceIP.withCString { inet_pton(AF_INET, $0, &addr.sin_addr) }
             guard parseResult == 1 else {
-                throw makeError("Failed to parse target IP address.", code: -18)
+                throw ConnectionDiagnostics.annotate(makeError("Failed to parse target IP address.", code: -18), stage: .targetAddress, targetIP: deviceIP)
             }
+            let port = RemotePairingPortResolver.resolve(targetIPAddress: deviceIP)
+            remotePairingPort = port
+            addr.sin_port = port.bigEndian
             address = withUnsafeBytes(of: &addr) { Data($0) }
         }
 
@@ -416,7 +437,7 @@ final class JITEnableContext {
 
         if let ffiError {
             tunnel.free()
-            throw error(from: ffiError, fallback: "Failed to create tunnel")
+            throw ConnectionDiagnostics.annotate(error(from: ffiError, fallback: "Failed to create tunnel"), stage: .tunnel, targetIP: deviceIP, port: remotePairingPort)
         }
 
         guard tunnel.adapter != nil, tunnel.handshake != nil else {

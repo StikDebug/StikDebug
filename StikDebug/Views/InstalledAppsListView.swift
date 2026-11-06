@@ -250,7 +250,7 @@ struct InstalledAppsListView: View {
 
     @ViewBuilder
     private var connectionStatusSection: some View {
-        if (!viewModel.hasReadApps && (!viewModel.hasConfirmedAppList || tunnel.isStarting)) ||
+        if tunnel.connectionNotice != nil || (!viewModel.hasReadApps && (!viewModel.hasConfirmedAppList || tunnel.isStarting)) ||
             (!tunnel.isStarting && !viewModel.isLoading && (!tunnel.isConnected || tunnel.lastError != nil || viewModel.lastError != nil)) {
             Section {
                 DeviceConnectionStatusView(

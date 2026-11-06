@@ -9,7 +9,6 @@ import UIKit
 private enum SettingsLinks {
     static let githubStars = URL(string: "https://github.com/StikDebug/StikDebug")!
     static let pairingFileGuide = URL(string: "https://github.com/StikDebug/StikDebug/blob/main/PAIRING.md")!
-    static let localDevVPN = URL(string: "https://apps.apple.com/us/app/localdevvpn/id6755608044")!
     static let discord = URL(string: "https://discord.gg/qahjXNTDwS")!
 }
 
@@ -323,20 +322,6 @@ struct SettingsView: View {
 
     // MARK: - Business Logic
 
-    private func connectLocalDevVPN() {
-        let callbackScheme = ProcessInfo.processInfo.environment["LC_HOME_PATH"] != nil
-            ? "livecontainer"
-            : "stikdebug"
-        guard let url = URL(string: "localdevvpn://enable?scheme=\(callbackScheme)") else { return }
-        UIApplication.shared.open(url, options: [:]) { opened in
-            if !opened {
-                DispatchQueue.main.async {
-                    UIApplication.shared.open(SettingsLinks.localDevVPN)
-                }
-            }
-        }
-    }
-
     private func openAppFolder() {
         guard let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
         let path = documentsURL.absoluteString.replacingOccurrences(of: "file://", with: "shareddocuments://")
@@ -438,6 +423,20 @@ private struct KeyboardTapDismissal: UIViewRepresentable {
 
         @objc private func dismissKeyboard() {
             window?.endEditing(true)
+        }
+    }
+}
+
+func connectLocalDevVPN() {
+    let callbackScheme = ProcessInfo.processInfo.environment["LC_HOME_PATH"] != nil
+        ? "livecontainer"
+        : "stikdebug"
+    guard let url = URL(string: "localdevvpn://enable?scheme=\(callbackScheme)") else { return }
+    UIApplication.shared.open(url, options: [:]) { opened in
+        if !opened {
+            DispatchQueue.main.async {
+                UIApplication.shared.open(URL(string: "https://apps.apple.com/us/app/localdevvpn/id6755608044")!)
+            }
         }
     }
 }

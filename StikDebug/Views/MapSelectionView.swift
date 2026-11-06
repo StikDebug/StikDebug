@@ -726,6 +726,7 @@ final class LocationSearchCompleter: NSObject, ObservableObject, MKLocalSearchCo
 struct LocationSimulationView: View {
     @ObservedObject private var tunnel = TunnelManager.shared
     @State private var showConnectedStatus = true
+    @State private var locationConnectionNotice: String?
     @State private var connectionErrorMessage: String?
     private var isDeviceConnected: Bool {
         tunnel.isConnected && !tunnel.isStarting && tunnel.lastError == nil && connectionErrorMessage == nil
@@ -963,8 +964,17 @@ struct LocationSimulationView: View {
             }
         }
         .safeAreaInset(edge: .top) {
-            if !isDeviceConnected || showConnectedStatus {
-                DeviceConnectionStatusView(errorMessage: connectionErrorMessage)
+            if locationConnectionNotice != nil || !isDeviceConnected || showConnectedStatus || tunnel.connectionNotice != nil {
+                Group {
+                    if let notice = locationConnectionNotice {
+                        Label(notice, systemImage: "airplane")
+                            .font(.subheadline)
+                            .foregroundStyle(.green)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        DeviceConnectionStatusView(errorMessage: connectionErrorMessage)
+                    }
+                }
                     .padding(12)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                     .padding(.horizontal)
@@ -977,6 +987,15 @@ struct LocationSimulationView: View {
                 try await Task.sleep(for: .seconds(3))
                 showConnectedStatus = false
             } catch {}
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .locationTunnelConnected).receive(on: DispatchQueue.main)) { notification in
+            locationConnectionNotice = notification.object as? String
+        }
+        .task(id: locationConnectionNotice) {
+            guard locationConnectionNotice != nil else { return }
+            try? await Task.sleep(for: .seconds(8))
+            guard !Task.isCancelled else { return }
+            locationConnectionNotice = nil
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -1073,6 +1092,7 @@ struct LocationSimulationView: View {
             }
         }
         .onDisappear {
+            locationConnectionNotice = nil
             routeLoadTask?.cancel()
             routeLoadTask = nil
             routeSpeedPrefetchTask?.cancel()
@@ -1388,6 +1408,7 @@ struct LocationSimulationView: View {
                     alertTitle = errorTitle
                     alertMessage = errorMessage(code)
                     connectionErrorMessage = "Code \(code): \(alertMessage)"
+                    locationConnectionNotice = nil
                     showAlert = true
                 }
             }
@@ -1410,6 +1431,7 @@ struct LocationSimulationView: View {
         ) {
             endBackgroundTask()
             LocationSimulationSession.shared.stop()
+            locationConnectionNotice = nil
         }
     }
 
@@ -1588,6 +1610,7 @@ struct LocationSimulationView: View {
                         alertTitle = "Route Simulation Failed"
                         alertMessage = "Could not continue route simulation (error \(code))."
                         connectionErrorMessage = "Code \(code): Could not continue route simulation."
+                        locationConnectionNotice = nil
                         showAlert = true
                     }
                     return

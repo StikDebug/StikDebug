@@ -14,8 +14,13 @@ struct DeviceConnectionStatusView: View {
         tunnel.lastError.map { "Code \($0.code): \($0.localizedDescription)" } ?? errorMessage
     }
 
+    private var diagnosis: ConnectionDiagnosis? {
+        tunnel.lastError == nil ? nil : tunnel.lastDiagnosis
+    }
+
     private var title: String {
         if tunnel.isStarting { return "Connecting…" }
+        if let diagnosis { return diagnosis.title }
         if !tunnel.isConnected { return "Device not connected" }
         if isReadingApps { return "Connecting…" }
         if errorMessage != nil { return "Connection error" }
@@ -23,17 +28,43 @@ struct DeviceConnectionStatusView: View {
         return "Device connected"
     }
 
+    private var diagnosisSummary: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+            if !isWorking, let diagnosis {
+                Text(diagnosis.message)
+                    .font(.subheadline)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             if isWorking {
                 ProgressView()
             } else {
-                Image(systemName: tunnel.isConnected && errorMessage == nil ? "checkmark.circle" : "exclamationmark.circle")
+                Image(systemName: diagnosis?.systemImage ?? (tunnel.isConnected && errorMessage == nil ? "checkmark.circle" : "exclamationmark.circle"))
                     .foregroundStyle(tunnel.isConnected && errorMessage == nil ? .green : .orange)
             }
             VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                if !isWorking, let detail = errorDetail {
+                diagnosisSummary
+                if !isWorking, diagnosis?.canConnectVPN == true {
+                    Button(action: connectLocalDevVPN) {
+                        Text("Tap here to connect the VPN")
+                            .font(.subheadline)
+                            .foregroundStyle(.tint)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityHint("Opens LocalDevVPN")
+                }
+                if !isWorking, tunnel.isConnected, errorMessage == nil, let notice = tunnel.connectionNotice {
+                    Text(notice)
+                        .font(.subheadline)
+                }
+                if !isWorking, diagnosis?.hasSimpleError != true, let detail = errorDetail {
                     Text(detail)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -44,7 +75,8 @@ struct DeviceConnectionStatusView: View {
             if !isWorking, let detail = errorDetail {
                 Button {
                     let diagnostics = connectionDiagnosticDetails().components(separatedBy: "\n").joined(separator: ", ")
-                    UIPasteboard.general.string = "StikDebug error:\n\(detail)\nv\(diagnostics)"
+                    let detected = diagnosis?.detectedSummary.map { "Detected: \($0)\n" } ?? ""
+                    UIPasteboard.general.string = "StikDebug error:\n\(detail)\n\(detected)v\(diagnostics)"
                     didCopy = true
                 } label: {
                     Image(systemName: didCopy ? "checkmark" : "doc.on.doc")
@@ -59,6 +91,9 @@ struct DeviceConnectionStatusView: View {
                     didCopy = false
                 }
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            tunnel.refreshDiagnosis()
         }
         .onChange(of: errorDetail) { _, _ in didCopy = false }
     }

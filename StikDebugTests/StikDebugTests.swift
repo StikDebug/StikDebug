@@ -11,6 +11,66 @@ import Testing
 
 struct StikDebugTests {
 
+    @Test func customTargetDiagnosticsDoNotRequireLocalVPN() {
+        let result = ConnectionDiagnostics.assessment(isLocal: false, cellular: true, hasVPN: false, loopback: false, reachable: false)
+        #expect(result.problem == .serviceUnreachable)
+        #expect(result.isLocal == false)
+    }
+
+    @Test func reachableServiceOverridesInconclusiveVPNChecks() {
+        let result = ConnectionDiagnostics.assessment(isLocal: true, cellular: true, hasVPN: false, loopback: false, reachable: true)
+        #expect(result.problem == .unknown)
+    }
+
+    @Test func cellularWithoutWiFiTakesPriorityOverUnreachableService() {
+        let result = ConnectionDiagnostics.assessment(isLocal: true, cellular: true, hasVPN: true, loopback: true, reachable: false)
+        #expect(result.problem == .cellular)
+    }
+
+    @Test func vpnSetupPrecedesCellularGuidance() {
+        #expect(ConnectionDiagnostics.assessment(isLocal: true, cellular: true, hasVPN: false, loopback: false, reachable: false).problem == .noVPN)
+        #expect(ConnectionDiagnostics.assessment(isLocal: true, cellular: false, hasVPN: false, loopback: false, reachable: false, networkUnavailable: true).problem == .networkUnavailable)
+        #expect(ConnectionDiagnostics.assessment(isLocal: true, cellular: false, hasVPN: true, loopback: false, reachable: false, networkUnavailable: true).problem == .networkUnavailable)
+        #expect(ConnectionDiagnostics.assessment(isLocal: true, cellular: false, hasVPN: true, loopback: true, reachable: false, networkUnavailable: true).problem == .serviceUnreachable)
+        #expect(ConnectionDiagnostics.assessment(isLocal: false, cellular: false, hasVPN: false, loopback: false, reachable: false, networkUnavailable: true).problem == .serviceUnreachable)
+        #expect(ConnectionDiagnosis(problem: .noVPN, isLocal: true).canConnectVPN)
+        #expect(!ConnectionDiagnosis(problem: .networkUnavailable, isLocal: true).canConnectVPN)
+        #expect(!ConnectionDiagnosis(problem: .noVPN, isLocal: false).canConnectVPN)
+    }
+
+    @Test func offlineConnectionNoticeRequiresConfirmedLocalNetworkConditions() {
+        let offline = ConnectionDiagnostics.NetworkConditions(wifi: false, cellular: false)
+        #expect(ConnectionDiagnostics.connectedNotice(targetIP: "10.7.0.1", conditions: offline) != nil)
+        #expect(ConnectionDiagnostics.connectedNotice(targetIP: "192.0.2.1", conditions: offline) == nil)
+        #expect(ConnectionDiagnostics.connectedNotice(targetIP: "10.7.0.1", conditions: nil) == nil)
+        #expect(ConnectionDiagnostics.connectedNotice(targetIP: "10.7.0.1", conditions: .init(wifi: true, cellular: false)) == nil)
+        #expect(ConnectionDiagnostics.connectedNotice(targetIP: "10.7.0.1", conditions: .init(wifi: false, cellular: true)) == nil)
+    }
+
+    @Test func diagnosticsDistinguishVPNAndServiceFailures() {
+        #expect(ConnectionDiagnostics.assessment(isLocal: true, cellular: false, hasVPN: false, loopback: false, reachable: false).problem == .noVPN)
+        #expect(ConnectionDiagnostics.assessment(isLocal: true, cellular: false, hasVPN: true, loopback: false, reachable: false).problem == .vpnUnresponsive)
+        #expect(ConnectionDiagnostics.assessment(isLocal: true, cellular: true, hasVPN: true, loopback: false, reachable: false).problem == .vpnUnresponsive)
+        #expect(ConnectionDiagnostics.assessment(isLocal: true, cellular: false, hasVPN: true, loopback: true, reachable: false).problem == .serviceUnreachable)
+        #expect(ConnectionDiagnostics.assessment(isLocal: true, cellular: false, hasVPN: nil, loopback: nil, reachable: nil).problem == .unknown)
+    }
+
+    @Test func genericConnectionErrorsDoNotImplyInvalidPairing() {
+        let error = NSError(domain: "StikDebug", code: -9, userInfo: [NSLocalizedDescriptionKey: "Connection timed out"])
+        #expect(ConnectionDiagnostics.knownProblem(error) == nil)
+        let rejected = NSError(domain: "StikDebug", code: 103, userInfo: [NSLocalizedDescriptionKey: "RemotePairing(PairVerifyFailed)"])
+        #expect(ConnectionDiagnostics.knownProblem(rejected) == .pairingRejected)
+    }
+
+    @Test func diagnosticContextPreservesOriginalError() {
+        let error = NSError(domain: "Example", code: -18, userInfo: [NSLocalizedDescriptionKey: "Invalid address"])
+        let annotated = ConnectionDiagnostics.annotate(error, stage: .targetAddress, targetIP: "invalid")
+        #expect(annotated.domain == error.domain)
+        #expect(annotated.code == error.code)
+        #expect(annotated.localizedDescription == error.localizedDescription)
+        #expect(ConnectionDiagnostics.knownProblem(annotated) == .invalidAddress)
+    }
+
     @Test func txmDetectionUsesClassicTXMBeforeIOS266() async throws {
         #expect(
             ProcessInfo.hasTXMSupport(
