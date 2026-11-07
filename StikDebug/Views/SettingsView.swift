@@ -257,17 +257,17 @@ struct SettingsView: View {
                 do {
                     try PairingFileStore.importFromPicker(url, fileManager: fileManager)
                     isImportingFile = false
-                    pairingImportMessage = ("Imported successfully", false)
+                    pairingImportMessage = (String(localized: "Imported successfully"), false)
                     startTunnelInBackground()
                     schedulePairingStatusDismiss()
                 } catch {
                     isImportingFile = false
-                    pairingImportMessage = ("Import failed: \(error.localizedDescription)", true)
+                    pairingImportMessage = (String(localized: "Import failed: \(error.localizedDescription)"), true)
                     schedulePairingStatusDismiss()
                 }
             case .failure(let error):
                 isImportingFile = false
-                pairingImportMessage = ("Import failed: \(error.localizedDescription)", true)
+                pairingImportMessage = (String(localized: "Import failed: \(error.localizedDescription)"), true)
                 schedulePairingStatusDismiss()
             }
         }
@@ -336,7 +336,7 @@ struct SettingsView: View {
             await MainActor.run {
                 isRedownloadingDDI = true
                 ddiDownloadProgress = 0
-                ddiStatusMessage = "Preparing download…"
+                ddiStatusMessage = String(localized: "Preparing download…")
                 ddiResultMessage = nil
             }
             do {
@@ -348,12 +348,12 @@ struct SettingsView: View {
                 }
                 await MainActor.run {
                     isRedownloadingDDI = false
-                    ddiResultMessage = ("DDI files refreshed successfully.", false)
+                    ddiResultMessage = (String(localized: "DDI files refreshed successfully."), false)
                 }
             } catch {
                 await MainActor.run {
                     isRedownloadingDDI = false
-                    ddiResultMessage = ("Failed to redownload DDI files: \(error.localizedDescription)", true)
+                    ddiResultMessage = (String(localized: "Failed to redownload DDI files: \(error.localizedDescription)"), true)
                 }
             }
         }

@@ -199,7 +199,7 @@ struct OnDevicePairingView: View {
         }
     }
 
-    private func guideStep(_ number: Int, _ text: String) -> some View {
+    private func guideStep(_ number: Int, _ text: LocalizedStringKey) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Text("\(number)")
                 .font(.caption.bold())

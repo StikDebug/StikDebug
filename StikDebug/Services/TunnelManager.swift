@@ -156,7 +156,7 @@ final class TunnelManager: ObservableObject {
         }
 
         showAlert(
-            title: "Connection Error",
+            title: "Connection Error".localized,
             message: tunnelConnectionAlertMessage(for: error, diagnosis: lastDiagnosis),
             showOk: false,
             showTryAgain: true
@@ -171,11 +171,11 @@ final class TunnelManager: ObservableObject {
         LogManager.shared.addInfoLog("Pairing file reported invalid; keeping existing file")
 
         showAlert(
-            title: "Invalid Pairing File",
+            title: "Invalid Pairing File".localized,
             message: tunnelConnectionAlertMessage(for: error, diagnosis: lastDiagnosis),
             showOk: true,
             showTryAgain: false,
-            primaryButtonText: "Select New File"
+            primaryButtonText: String(localized: "Select New File")
         ) { _ in
             NotificationCenter.default.post(name: NSNotification.Name("ShowPairingFilePicker"), object: nil)
         }

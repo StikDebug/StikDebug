@@ -1700,7 +1700,7 @@ private struct RouteSearchSheet: View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 16) {
                 routeField(
-                    title: "Start",
+                    title: "Start".localized,
                     icon: "circle.fill",
                     tint: .green,
                     text: $startQuery,
@@ -1709,7 +1709,7 @@ private struct RouteSearchSheet: View {
                 )
 
                 routeField(
-                    title: "End",
+                    title: "End".localized,
                     icon: "flag.checkered.circle.fill",
                     tint: .red,
                     text: $endQuery,
