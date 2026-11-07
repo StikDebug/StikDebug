@@ -4948,13 +4948,13 @@
         }
       }
     },
-    "Turn off Airplane Mode": {
+    "Disable Airplane Mode": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Turn off Airplane Mode"
+            "value": "Disable Airplane Mode"
           }
         },
         "zh-Hans": {
@@ -4982,13 +4982,13 @@
         }
       }
     },
-    "Local VPN isn’t responding": {
+    "LocalDevVPN is unavailable": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Local VPN isn’t responding"
+            "value": "LocalDevVPN is unavailable"
           }
         },
         "zh-Hans": {
@@ -5135,13 +5135,13 @@
         }
       }
     },
-    "Keep LocalDevVPN connected. Enable Airplane Mode (or just disable Cellular Data), then try again.": {
+    "Keep LocalDevVPN connected. Enable Airplane Mode by swiping down from the top-right corner of your screen and tapping the airplane icon, then return here.": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Keep LocalDevVPN connected. Enable Airplane Mode (or just disable Cellular Data), then try again."
+            "value": "Keep LocalDevVPN connected. Enable Airplane Mode by swiping down from the top-right corner of your screen and tapping the airplane icon, then return here."
           }
         },
         "zh-Hans": {
@@ -5152,13 +5152,13 @@
         }
       }
     },
-    "Enable Wi-Fi or Cellular Data, then connect LocalDevVPN.": {
+    "Disable Airplane Mode by swiping down from the top-right corner of your screen and tapping the airplane icon, then return here.": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Enable Wi-Fi or Cellular Data, then connect LocalDevVPN."
+            "value": "Disable Airplane Mode by swiping down from the top-right corner of your screen and tapping the airplane icon, then return here."
           }
         },
         "zh-Hans": {
@@ -5186,13 +5186,13 @@
         }
       }
     },
-    "Reconnect LocalDevVPN, then return to StikDebug and try again.": {
+    "Connect the VPN, then return here.": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Reconnect LocalDevVPN, then return to StikDebug and try again."
+            "value": "Connect the VPN, then return here."
           }
         },
         "zh-Hans": {
@@ -5254,13 +5254,13 @@
         }
       }
     },
-    "Connected without Wi-Fi or cellular. You can now enable Cellular Data, and the tunnel will remain connected.": {
+    "Connected over Airplane Mode. You can now disable Airplane Mode if you wish, StikDebug will remain connected.": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Connected without Wi-Fi or cellular. You can now enable Cellular Data, and the tunnel will remain connected."
+            "value": "Connected over Airplane Mode. You can now disable Airplane Mode if you wish, StikDebug will remain connected."
           }
         },
         "zh-Hans": {

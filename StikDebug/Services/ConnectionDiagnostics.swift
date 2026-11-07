@@ -20,9 +20,9 @@ struct ConnectionDiagnosis: Equatable {
         case .developerMode: return String(localized: "Developer Mode is off")
         case .developerService: return String(localized: "Developer service unavailable")
         case .cellular: return String(localized: "Enable Airplane Mode")
-        case .networkUnavailable: return String(localized: "Turn off Airplane Mode")
+        case .networkUnavailable: return String(localized: "Disable Airplane Mode")
         case .noVPN: return String(localized: "Connect LocalDevVPN")
-        case .vpnUnresponsive: return String(localized: "Local VPN isn’t responding")
+        case .vpnUnresponsive: return String(localized: "LocalDevVPN is unavailable")
         case .serviceUnreachable: return String(localized: "Device isn’t reachable")
         case .unknown: return String(localized: "Couldn’t connect to the device")
         }
@@ -72,13 +72,13 @@ struct ConnectionDiagnosis: Equatable {
         case .developerService:
             return String(localized: "Check that Developer Mode is enabled. Try reconnecting; if the service is still unavailable, redownload the developer disk image in Settings.")
         case .cellular:
-            return String(localized: "Keep LocalDevVPN connected. Enable Airplane Mode (or just disable Cellular Data), then try again.")
+            return String(localized: "Keep LocalDevVPN connected. Enable Airplane Mode by swiping down from the top-right corner of your screen and tapping the airplane icon, then return here.")
         case .networkUnavailable:
-            return String(localized: "Enable Wi-Fi or Cellular Data, then connect LocalDevVPN.")
+            return String(localized: "Disable Airplane Mode by swiping down from the top-right corner of your screen and tapping the airplane icon, then return here.")
         case .noVPN:
             return String(localized: "Connect LocalDevVPN, then return to StikDebug and try again.")
         case .vpnUnresponsive:
-            return String(localized: "Reconnect LocalDevVPN, then return to StikDebug and try again.")
+            return String(localized: "Connect the VPN, then return here.")
         case .serviceUnreachable:
             return isLocal
                 ? String(localized: "The device’s pairing service isn’t reachable. Check Remote Pairing Port in Settings. If it still fails, restart the device and reconnect LocalDevVPN.")
@@ -154,7 +154,7 @@ enum ConnectionDiagnostics {
     static func connectedNotice(targetIP: String, conditions: NetworkConditions?) -> String? {
         guard targetIP == DeviceConnectionContext.defaultTargetIPAddress,
               let conditions, !conditions.wifi, !conditions.cellular else { return nil }
-        return String(localized: "Connected without Wi-Fi or cellular. You can now enable Cellular Data, and the tunnel will remain connected.")
+        return String(localized: "Connected over Airplane Mode. You can now disable Airplane Mode if you wish, StikDebug will remain connected.")
     }
 
     static func networkConditions() -> NetworkConditions? {
