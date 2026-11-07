@@ -41,7 +41,7 @@ enum HomeExternalAction: Identifiable {
         }
     }
 
-    var title: String {
+    var title: LocalizedStringKey {
         switch self {
         case .enableJIT:
             return "Enable JIT?"
@@ -55,23 +55,23 @@ enum HomeExternalAction: Identifiable {
     var message: String {
         switch self {
         case .enableJIT(let configuration):
-            let scriptText = configuration.scriptData == nil ? "" : " and run a script"
-            return "An external link wants to enable JIT\(scriptText) for \(targetDescription(for: configuration))."
+            let scriptText = configuration.scriptData == nil ? "" : String(localized: " and run a script")
+            return String(localized: "An external link wants to enable JIT\(scriptText) for \(targetDescription(for: configuration)).")
         case .killProcess(let target):
-            return "An external link wants to kill process \(target.description)."
+            return String(localized: "An external link wants to kill process \(target.description).")
         case .launchApp(let bundleID):
-            return "An external link wants to launch \(bundleID)."
+            return String(localized: "An external link wants to launch \(bundleID).")
         }
     }
 
     var confirmationTitle: String {
         switch self {
         case .enableJIT(let configuration):
-            return configuration.scriptData == nil ? "Enable JIT" : "Enable and Run Script"
+            return configuration.scriptData == nil ? String(localized: "Enable JIT") : String(localized: "Enable and Run Script")
         case .killProcess:
-            return "Kill Process"
+            return String(localized: "Kill Process")
         case .launchApp:
-            return "Launch App"
+            return String(localized: "Launch App")
         }
     }
 
@@ -91,8 +91,8 @@ enum HomeExternalAction: Identifiable {
             return bundleID
         }
         if let pid = configuration.pid {
-            return "process \(pid)"
+            return String(localized: "process \(pid)")
         }
-        return "the requested app"
+        return String(localized: "the requested app")
     }
 }

@@ -49,7 +49,7 @@ struct StikDebugApp: App {
         } catch {
             await MainActor.run {
                 showAlert(
-                    title: "An Error has Occurred",
+                    title: "An Error has Occurred".localized,
                     message: "[Download DDI Error]: \(error.localizedDescription)",
                     showOk: true
                 )

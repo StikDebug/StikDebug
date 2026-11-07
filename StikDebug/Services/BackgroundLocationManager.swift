@@ -105,7 +105,7 @@ final class BackgroundLocationManager: NSObject, CLLocationManagerDelegate {
         BackgroundAudioManager.shared.configurationDidChange()
 
         showAlert(
-            title: "Location Access Refused",
+            title: "Location Access Refused".localized,
             message: "Location access was refused. Open Settings to enable it.",
             showOk: false,
             showTryAgain: true,

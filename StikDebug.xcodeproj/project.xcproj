@@ -10,6 +10,7 @@
       "Base",
       "es",
       "it",
+      "zh-Hans",
     ],
   },
   "packages": [
@@ -22,6 +23,7 @@
     },
   ],
   "files": [
+    { "path": "StikDebug/Localizable.xcstrings", "target-membership": [ "StikDebug/resources" ] },
     {
       "kind": "folder",
       "path": "StikDebug",

@@ -79,7 +79,7 @@ final class DeveloperDiskImageService {
         let totalStages = Double(Self.downloadItems.count + 1)
         var completedStages = 0.0
 
-        progressHandler?(0.0, "Removing existing DDI files...")
+        progressHandler?(0.0, String(localized: "Removing existing DDI files..."))
         UserDefaults.standard.removeObject(forKey: Self.mountMethodKey)
         try removeObsoleteFiles()
         if !Self.usesCryptexDDI {
@@ -97,19 +97,19 @@ final class DeveloperDiskImageService {
         }
 
         completedStages += 1.0
-        progressHandler?(completedStages / totalStages, "Starting downloads...")
+        progressHandler?(completedStages / totalStages, String(localized: "Starting downloads..."))
 
         for item in Self.downloadItems {
-            progressHandler?(completedStages / totalStages, "Downloading \(item.name)...")
+            progressHandler?(completedStages / totalStages, String(localized: "Downloading \(item.name)..."))
             let destinationURL = Self.directoryURL.appendingPathComponent(item.fileName)
             try await downloadFile(from: item.urlString, to: destinationURL)
             completedStages += 1.0
-            progressHandler?(completedStages / totalStages, "\(item.name) ready")
+            progressHandler?(completedStages / totalStages, String(localized: "\(item.name) ready"))
         }
 
         UserDefaults.standard.set(Self.mountMethod.rawValue, forKey: Self.mountMethodKey)
 
-        progressHandler?(1.0, "DDI download complete.")
+        progressHandler?(1.0, String(localized: "DDI download complete."))
     }
 
     private func removeObsoleteFiles() throws {

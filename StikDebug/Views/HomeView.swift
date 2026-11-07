@@ -161,7 +161,7 @@ struct HomeView: View {
                 scriptData = try Data(contentsOf: scriptURL)
             } catch {
                 showAlert(
-                    title: "Unable to Read Script",
+                    title: "Unable to Read Script".localized,
                     message: error.localizedDescription,
                     showOk: true
                 )
@@ -322,7 +322,7 @@ struct HomeView: View {
                 } catch {
                     DispatchQueue.main.async {
                         LogManager.shared.addErrorLog("Failed to kill process \(target.description): \(error.localizedDescription)")
-                        showAlert(title: "Failed to Kill Process", message: error.localizedDescription, showOk: true)
+                        showAlert(title: "Failed to Kill Process".localized, message: error.localizedDescription, showOk: true)
                     }
                 }
             }

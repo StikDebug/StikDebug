@@ -19,13 +19,13 @@ struct DeviceConnectionStatusView: View {
     }
 
     private var title: String {
-        if tunnel.isStarting { return "Connecting…" }
+        if tunnel.isStarting { return String(localized: "Connecting…") }
         if let diagnosis { return diagnosis.title }
-        if !tunnel.isConnected { return "Device not connected" }
-        if isReadingApps { return "Connecting…" }
-        if errorMessage != nil { return "Connection error" }
-        if !hasConfirmedApps { return "App list unavailable" }
-        return "Device connected"
+        if !tunnel.isConnected { return String(localized: "Device not connected") }
+        if isReadingApps { return String(localized: "Connecting…") }
+        if errorMessage != nil { return String(localized: "Connection error") }
+        if !hasConfirmedApps { return String(localized: "App list unavailable") }
+        return String(localized: "Device connected")
     }
 
     private var diagnosisSummary: some View {

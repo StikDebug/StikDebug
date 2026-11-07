@@ -13,18 +13,18 @@ struct ConnectionDiagnosis: Equatable {
 
     var title: String {
         switch problem {
-        case .pairingFile: return "Pairing file unavailable"
-        case .invalidAddress: return "Invalid target address"
-        case .pairingRejected: return "Pairing file rejected"
-        case .deviceLocked: return "Device is locked"
-        case .developerMode: return "Developer Mode is off"
-        case .developerService: return "Developer service unavailable"
-        case .cellular: return "Enable Airplane Mode"
-        case .networkUnavailable: return "Turn off Airplane Mode"
-        case .noVPN: return "Connect LocalDevVPN"
-        case .vpnUnresponsive: return "Local VPN isn’t responding"
-        case .serviceUnreachable: return "Device isn’t reachable"
-        case .unknown: return "Couldn’t connect to the device"
+        case .pairingFile: return String(localized: "Pairing file unavailable")
+        case .invalidAddress: return String(localized: "Invalid target address")
+        case .pairingRejected: return String(localized: "Pairing file rejected")
+        case .deviceLocked: return String(localized: "Device is locked")
+        case .developerMode: return String(localized: "Developer Mode is off")
+        case .developerService: return String(localized: "Developer service unavailable")
+        case .cellular: return String(localized: "Enable Airplane Mode")
+        case .networkUnavailable: return String(localized: "Turn off Airplane Mode")
+        case .noVPN: return String(localized: "Connect LocalDevVPN")
+        case .vpnUnresponsive: return String(localized: "Local VPN isn’t responding")
+        case .serviceUnreachable: return String(localized: "Device isn’t reachable")
+        case .unknown: return String(localized: "Couldn’t connect to the device")
         }
     }
 
@@ -60,31 +60,31 @@ struct ConnectionDiagnosis: Equatable {
         switch problem {
         case .pairingFile, .pairingRejected:
             if #available(iOS 27.0, *) {
-                return "Generate and place a new pairing file using Settings → Pair a Device, or iloader."
+                return String(localized: "Generate and place a new pairing file using Settings → Pair a Device, or iloader.")
             }
-            return "Generate and place a new pairing file using iloader."
+            return String(localized: "Generate and place a new pairing file using iloader.")
         case .invalidAddress:
-            return "Check Target Device IP in Settings. Enter an IPv4 address such as 10.7.0.1."
+            return String(localized: "Check Target Device IP in Settings. Enter an IPv4 address such as 10.7.0.1.")
         case .deviceLocked:
-            return "Unlock the target device and try again."
+            return String(localized: "Unlock the target device and try again.")
         case .developerMode:
-            return "Enable Developer Mode in the target device’s Settings → Privacy & Security, then follow its restart instructions."
+            return String(localized: "Enable Developer Mode in the target device’s Settings → Privacy & Security, then follow its restart instructions.")
         case .developerService:
-            return "Check that Developer Mode is enabled. Try reconnecting; if the service is still unavailable, redownload the developer disk image in Settings."
+            return String(localized: "Check that Developer Mode is enabled. Try reconnecting; if the service is still unavailable, redownload the developer disk image in Settings.")
         case .cellular:
-            return "Keep LocalDevVPN connected. Enable Airplane Mode (or just disable Cellular Data), then try again."
+            return String(localized: "Keep LocalDevVPN connected. Enable Airplane Mode (or just disable Cellular Data), then try again.")
         case .networkUnavailable:
-            return "Enable Wi-Fi or Cellular Data, then connect LocalDevVPN."
+            return String(localized: "Enable Wi-Fi or Cellular Data, then connect LocalDevVPN.")
         case .noVPN:
-            return "Connect LocalDevVPN, then return to StikDebug and try again."
+            return String(localized: "Connect LocalDevVPN, then return to StikDebug and try again.")
         case .vpnUnresponsive:
-            return "Reconnect LocalDevVPN, then return to StikDebug and try again."
+            return String(localized: "Reconnect LocalDevVPN, then return to StikDebug and try again.")
         case .serviceUnreachable:
             return isLocal
-                ? "The device’s pairing service isn’t reachable. Check Remote Pairing Port in Settings. If it still fails, restart the device and reconnect LocalDevVPN."
-                : "Check Target Device IP and Remote Pairing Port in Settings, and make sure the target device is reachable on your network."
+                ? String(localized: "The device’s pairing service isn’t reachable. Check Remote Pairing Port in Settings. If it still fails, restart the device and reconnect LocalDevVPN.")
+                : String(localized: "Check Target Device IP and Remote Pairing Port in Settings, and make sure the target device is reachable on your network.")
         case .unknown:
-            return "Unlock the target device and try again. If the error continues, restart the target device."
+            return String(localized: "Unlock the target device and try again. If the error continues, restart the target device.")
         }
     }
 }
@@ -154,7 +154,7 @@ enum ConnectionDiagnostics {
     static func connectedNotice(targetIP: String, conditions: NetworkConditions?) -> String? {
         guard targetIP == DeviceConnectionContext.defaultTargetIPAddress,
               let conditions, !conditions.wifi, !conditions.cellular else { return nil }
-        return "Connected without Wi-Fi or cellular. You can now enable Cellular Data, and the tunnel will remain connected."
+        return String(localized: "Connected without Wi-Fi or cellular. You can now enable Cellular Data, and the tunnel will remain connected.")
     }
 
     static func networkConditions() -> NetworkConditions? {
