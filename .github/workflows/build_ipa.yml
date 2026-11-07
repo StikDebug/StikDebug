@@ -124,4 +124,6 @@ jobs:
           python-version: '3.x'
 
       - name: Update StikDebug source
-        run: .github/scripts/update_source.sh Website '${{ needs.build.outputs.version }}'
+        run: |
+          chmod +x .github/scripts/update_source.sh
+          .github/scripts/update_source.sh Website '${{ needs.build.outputs.version }}'
