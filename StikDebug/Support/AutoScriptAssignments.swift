@@ -24,7 +24,9 @@ extension ScriptStore {
                 "Applesauce",
                 "RPCS3",
                 "AetherPS4",
-                "Husk"
+                "Husk",
+                "Utsuro",
+                "Henge"
             ],
             resource: ScriptResource(resourceName: "universal", fileName: "universal.js")
         ),
