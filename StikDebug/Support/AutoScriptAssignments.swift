@@ -15,7 +15,7 @@ extension ScriptStore {
                 "Amethyst",
                 "MeloNX",
                 "XeniOS",
-                "MeloCafé",
+                "MeloCafe",
                 "Manic EMU",
                 "DukeX",
                 "TachyonU",
