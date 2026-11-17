@@ -71,6 +71,30 @@ struct StikDebugTests {
         #expect(ConnectionDiagnostics.knownProblem(annotated) == .invalidAddress)
     }
 
+    @Test func pairingDiagnosticsRecognizeTunnelResetAndMissingPublicKey() {
+        let reset = NSError(domain: "StikDebug", code: -9, userInfo: [
+            NSLocalizedDescriptionKey: "Socket(OS { code: 54, kind: ConnectionReset, message: \"Connection reset by peer\" })"
+        ])
+        #expect(ConnectionDiagnostics.knownProblem(reset) == nil)
+        let tunnelReset = ConnectionDiagnostics.annotate(reset, stage: .tunnel, targetIP: "10.7.0.1")
+        #expect(ConnectionDiagnostics.knownProblem(tunnelReset) == .pairingRejected)
+
+        let missingKey = NSError(domain: "StikDebug", code: -9, userInfo: [
+            NSLocalizedDescriptionKey: "Plist(Error { kind: Serde(\"missing field 'public_key'\") })"
+        ])
+        let pairingError = ConnectionDiagnostics.annotate(missingKey, stage: .pairingFile, targetIP: "10.7.0.1")
+        #expect(ConnectionDiagnostics.knownProblem(pairingError) == .pairingRejected)
+    }
+
+    @Test func connectionRefusedRecommendsRestart() {
+        let refused = NSError(domain: "StikDebug", code: -9, userInfo: [
+            NSLocalizedDescriptionKey: "Connection refused (os error 61)"
+        ])
+        #expect(ConnectionDiagnostics.knownProblem(refused) == .connectionRefused)
+        let diagnosis = ConnectionDiagnosis(problem: .connectionRefused, isLocal: true)
+        #expect(diagnosis.message == String(localized: "Restart the target device, then try again."))
+    }
+
     @Test func txmDetectionUsesClassicTXMBeforeIOS266() async throws {
         #expect(
             ProcessInfo.hasTXMSupport(

@@ -5,7 +5,7 @@ import Network
 struct ConnectionDiagnosis: Equatable {
     enum Problem {
         case pairingFile, invalidAddress, pairingRejected, deviceLocked, developerMode
-        case developerService, cellular, networkUnavailable, noVPN, vpnUnresponsive, serviceUnreachable, unknown
+        case developerService, cellular, networkUnavailable, noVPN, vpnUnresponsive, serviceUnreachable, connectionRefused, unknown
     }
 
     let problem: Problem
@@ -24,6 +24,7 @@ struct ConnectionDiagnosis: Equatable {
         case .noVPN: return String(localized: "Connect LocalDevVPN")
         case .vpnUnresponsive: return String(localized: "LocalDevVPN is unavailable")
         case .serviceUnreachable: return String(localized: "Device isn’t reachable")
+        case .connectionRefused: return String(localized: "Connection refused")
         case .unknown: return String(localized: "Couldn’t connect to the device")
         }
     }
@@ -37,7 +38,7 @@ struct ConnectionDiagnosis: Equatable {
         case .developerService: return "externaldrive.badge.exclamationmark"
         case .cellular, .networkUnavailable: return "airplane"
         case .noVPN, .vpnUnresponsive: return "shield.slash"
-        case .serviceUnreachable: return "antenna.radiowaves.left.and.right.slash"
+        case .serviceUnreachable, .connectionRefused: return "antenna.radiowaves.left.and.right.slash"
         case .unknown: return "exclamationmark.triangle"
         }
     }
@@ -60,7 +61,7 @@ struct ConnectionDiagnosis: Equatable {
         switch problem {
         case .pairingFile, .pairingRejected:
             if #available(iOS 27.0, *) {
-                return String(localized: "Generate and place a new pairing file using Settings → Pair a Device, or iloader.")
+                return String(localized: "Generate and place a new pairing file using Settings → Pair a Device in StikDebug.")
             }
             return String(localized: "Generate and place a new pairing file using iloader.")
         case .invalidAddress:
@@ -83,6 +84,8 @@ struct ConnectionDiagnosis: Equatable {
             return isLocal
                 ? String(localized: "The device’s pairing service isn’t reachable. Check Remote Pairing Port in Settings. If it still fails, restart the device and reconnect LocalDevVPN.")
                 : String(localized: "Check Target Device IP and Remote Pairing Port in Settings, and make sure the target device is reachable on your network.")
+        case .connectionRefused:
+            return String(localized: "Restart the target device, then try again.")
         case .unknown:
             return String(localized: "Unlock the target device and try again. If the error continues, restart the target device.")
         }
@@ -123,13 +126,25 @@ enum ConnectionDiagnostics {
     }
 
     static func knownProblem(_ error: NSError) -> ConnectionDiagnosis.Problem? {
-        if error.userInfo["ConnectionStage"] as? String == Stage.pairingFile.rawValue { return .pairingFile }
-        if error.userInfo["ConnectionStage"] as? String == Stage.targetAddress.rawValue { return .invalidAddress }
+        let stage = error.userInfo["ConnectionStage"] as? String
         let detail = error.localizedDescription.lowercased()
+        if detail.contains("plist") && detail.contains("missing field") && detail.contains("public_key") {
+            return .pairingRejected
+        }
+        if stage == Stage.pairingFile.rawValue { return .pairingFile }
+        if stage == Stage.targetAddress.rawValue { return .invalidAddress }
+        if stage == Stage.tunnel.rawValue && detail.contains("socket(os") &&
+            detail.contains("code: 54,") && detail.contains("connection reset by peer") {
+            return .pairingRejected
+        }
         if detail.contains("invalidhostid") || detail.contains("invalid host id") || detail.contains("pairverifyfailed") { return .pairingRejected }
         if detail.contains("devicelocked") || detail.contains("device locked") || detail.contains("passwordprotected") { return .deviceLocked }
         if detail.contains("developermodenotenabled") || detail.contains("developer mode is not enabled") { return .developerMode }
         if detail.contains("servicenotfound") || detail.contains("service not found") || detail.contains("imagenotmounted") || detail.contains("image not mounted") { return .developerService }
+        if (error.domain == NSPOSIXErrorDomain && error.code == Int(ECONNREFUSED)) ||
+            (detail.contains("connection refused") && (detail.contains("(os error 61)") || detail.contains("code: 61,"))) {
+            return .connectionRefused
+        }
         return nil
     }
 
