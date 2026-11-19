@@ -27,6 +27,31 @@ enum ScriptStore {
         URL.documentsDirectory.appendingPathComponent(directoryName)
     }
 
+    static func isBuiltInScript(_ url: URL) -> Bool {
+        bundledResources.contains { $0.fileName == url.lastPathComponent }
+    }
+
+    static func importScript(from source: URL, fileManager: FileManager = .default) throws -> URL {
+        guard let fileName = normalizedScriptFileName(source.lastPathComponent) else {
+            throw CocoaError(.fileReadInvalidFileName)
+        }
+
+        let directory = try prepareDirectory(fileManager: fileManager)
+        let name = fileName as NSString
+        var destination = directory.appendingPathComponent(fileName)
+        var copyNumber = 2
+        while true {
+            do {
+                try fileManager.copyItem(at: source, to: destination)
+                return destination
+            } catch let error as NSError where error.domain == NSCocoaErrorDomain &&
+                error.code == CocoaError.fileWriteFileExists.rawValue {
+                destination = directory.appendingPathComponent("\(name.deletingPathExtension) (\(copyNumber)).\(name.pathExtension)")
+                copyNumber += 1
+            }
+        }
+    }
+
     @discardableResult
     static func prepareDirectory(fileManager: FileManager = .default) throws -> URL {
         let directory = directoryURL

@@ -68,9 +68,10 @@ struct ScriptListView: View {
                 } else {
                     Section {
                         ForEach(filteredScripts, id: \.self) { script in
+                            let canDelete = !isPickerMode && !ScriptStore.isBuiltInScript(script)
                             scriptRow(script)
                                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                    if !isPickerMode {
+                                    if canDelete {
                                         Button(role: .destructive) {
                                             pendingDelete = script
                                             showDeleteConfirmation = true
@@ -85,9 +86,14 @@ struct ScriptListView: View {
                                         Label("Copy Path", systemImage: "folder")
                                     }
                                     if !isPickerMode {
+                                        ShareLink(item: script) {
+                                            Label("Export", systemImage: "square.and.arrow.up")
+                                        }
                                         Button { saveDefaultScript(script) } label: {
                                             Label("Set Default", systemImage: "star")
                                         }
+                                    }
+                                    if canDelete {
                                         Divider()
                                         Button(role: .destructive) {
                                             pendingDelete = script
@@ -268,18 +274,10 @@ struct ScriptListView: View {
                 }
             }
             do {
-                guard let fileName = ScriptStore.normalizedScriptFileName(fileURL.lastPathComponent) else {
-                    throw CocoaError(.fileReadInvalidFileName)
-                }
-                let directory = try self.scriptsDirectory()
-                let dest = directory.appendingPathComponent(fileName)
-                if FileManager.default.fileExists(atPath: dest.path) {
-                    try FileManager.default.removeItem(at: dest)
-                }
-                try FileManager.default.copyItem(at: fileURL, to: dest)
+                let destination = try ScriptStore.importScript(from: fileURL)
                 DispatchQueue.main.async {
                     self.loadScripts()
-                    self.presentSuccess(title: "Imported", message: fileName)
+                    self.presentSuccess(title: "Imported", message: destination.lastPathComponent)
                 }
             } catch {
                 DispatchQueue.main.async {
