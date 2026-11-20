@@ -13,6 +13,7 @@ extension ScriptStore {
         AutoScriptAssignment(
             appNames: [
                 "Amethyst",
+                "Andarium",
                 "MeloNX",
                 "XeniOS",
                 "MeloCafe",

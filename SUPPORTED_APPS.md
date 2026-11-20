@@ -17,6 +17,7 @@ To download a script, select its link below, then select **Download raw file** o
 | App | Script |
 | --- | --- |
 | [Amethyst](https://github.com/AngelAuraMC/Amethyst-iOS) | [universal.js](StikDebug/Scripts/universal.js) |
+| [Andarium](https://github.com/imxieyi/Kernarium) | [universal.js](StikDebug/Scripts/universal.js) |
 | [Applesauce](https://github.com/0xjohnnydev/Applesauce) | [universal.js](StikDebug/Scripts/universal.js) |
 | [ARMSX2 iOS](https://github.com/ARMSX2/ARMSX2) | [legacy.js](StikDebug/Scripts/legacy.js) |
 | [DolphiniOS](https://github.com/OatmealDome/dolphin-ios) | [legacy.js](StikDebug/Scripts/legacy.js) |
